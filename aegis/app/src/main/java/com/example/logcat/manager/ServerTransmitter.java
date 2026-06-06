@@ -260,11 +260,36 @@ public class ServerTransmitter {
 
                 byte[] content = java.nio.file.Files.readAllBytes(logFile.toPath());
                 byte[] hashContent = java.nio.file.Files.readAllBytes(hashFile.toPath());
-                String logText = new String(content, java.nio.charset.StandardCharsets.UTF_8);
+                String rawText = new String(content, java.nio.charset.StandardCharsets.UTF_8);
                 String chainHash = new String(hashContent, java.nio.charset.StandardCharsets.UTF_8).trim();
 
                 Arrays.fill(content, (byte) 0);
                 Arrays.fill(hashContent, (byte) 0);
+
+                // 파일은 at-rest 암호화(CryptoManager AES-GCM)로 저장되어 있으므로 각 줄을 복호화
+                CryptoManager crypto = CryptoManager.getInstance();
+                StringBuilder decrypted = new StringBuilder();
+                for (String line : rawText.split("\n")) {
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty()) continue;
+                    try {
+                        decrypted.append(crypto.decryptToString(trimmed)).append("\n");
+                    } catch (Exception ex) {
+                        // 복호화 실패 시 원문 유지 (이미 평문인 경우)
+                        decrypted.append(trimmed).append("\n");
+                    }
+                }
+                String logText = decrypted.toString().trim();
+
+                // BE의 HashService.calculateMessageHash(normalized)와 동일한 방식으로 해시 계산
+                String normalizedContent = String.join("\n",
+                    java.util.Arrays.stream(logText.split("\\r?\n"))
+                        .collect(java.util.stream.Collectors.toList()));
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                byte[] hashBytes = md.digest(normalizedContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                for (byte b : hashBytes) sb.append(String.format("%02x", b));
+                chainHash = sb.toString();
 
                 success = uploadEncryptedLog(deviceId, logType, logText, chainHash);
             } catch (Exception e) {

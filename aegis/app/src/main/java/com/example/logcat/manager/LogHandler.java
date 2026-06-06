@@ -84,7 +84,9 @@ public class LogHandler {
 
     public void initializeLogFile() {
         internalDir = new File(context.getFilesDir(), directoryName);
-        if (!internalDir.exists() && !internalDir.mkdirs()) {
+        if (internalDir.exists()) {
+            applyWritableToDirectory(internalDir);
+        } else if (!internalDir.mkdirs()) {
             Log.e(TAG, "Failed to create log directory: " + internalDir.getAbsolutePath());
             return;
         }
@@ -232,7 +234,7 @@ public class LogHandler {
             String hashFilePath = internalDir.getParent() + "/" + extractHashName(expectedHash);
             File hf = new File(hashFilePath, expectedHash);
 
-            if (lf.exists() && hf.exists()) {
+            if (lf.exists() && hf.exists() && lf.length() > 0) {
                 serverTransmitter.sendFilesAsync(lf, hf, new ServerTransmitter.FileTransferCallback() {
                     @Override
                     public void onSuccess() {

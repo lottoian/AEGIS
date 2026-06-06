@@ -49,8 +49,13 @@ public class ClientCryptoPipeline {
     private final byte[] serverX25519PublicKeyRaw; // 서버의 X25519 공개키 32바이트 원시값
     private final String deviceId;
 
-    public ClientCryptoPipeline(byte[] serverX25519PublicKeyRaw, String deviceId) {
-        this.serverX25519PublicKeyRaw = serverX25519PublicKeyRaw.clone();
+    public ClientCryptoPipeline(byte[] serverX25519PublicKeyDer, String deviceId) {
+        // 서버가 반환하는 X.509 DER(44바이트) → 마지막 32바이트가 raw X25519 공개키
+        if (serverX25519PublicKeyDer.length == 44) {
+            this.serverX25519PublicKeyRaw = Arrays.copyOfRange(serverX25519PublicKeyDer, 12, 44);
+        } else {
+            this.serverX25519PublicKeyRaw = serverX25519PublicKeyDer.clone();
+        }
         this.deviceId = deviceId;
         ensureSigningKeyExists();
     }

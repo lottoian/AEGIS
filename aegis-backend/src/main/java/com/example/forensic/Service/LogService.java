@@ -79,7 +79,9 @@ public class LogService {
             }
 
             // 2. 복호화된 컨텐츠로 해시 계산 및 비교
-            String computedHash = hashService.calculateMessageHash(decryptedLogContent);
+            String sanitizedContent = Arrays.stream(decryptedLogContent.split("\\r?\\n"))
+                    .collect(Collectors.joining("\n"));
+            String computedHash = hashService.calculateMessageHash(sanitizedContent);
             if (expectedHash != null && !computedHash.equals(expectedHash)) {
                 System.out.println("Expected Hash: " + expectedHash);
                 System.out.println("Computed Hash: " + computedHash);
@@ -125,7 +127,25 @@ public class LogService {
                 throw new IllegalArgumentException("유효한 로그 메시지가 없습니다.");
             }
 
-            Log log = new Log(deviceId, messages, logType, computedHash);
+            // reportService 재조합 방식과 동일한 해시 계산
+            StringBuilder reconstructed = new StringBuilder();
+            for (Message msg : messages) {
+                reconstructed.append(msg.getDeviceTimestamp().format(FORMATTER))
+                        .append(" ")
+                        .append(msg.getContent());
+                if (msg.getServerTimestamp() != null) {
+                    reconstructed.append(" ; serverTimestamp: ")
+                            .append(msg.getServerTimestamp().format(FORMATTER));
+                }
+                reconstructed.append("\n");
+            }
+            // calculateFileHash는 lines().joining("\n")으로 trailing newline 없이 계산
+            // reconstructed는 trailing \n 포함 → 동일 방식으로 정규화
+            String reconstructedForHash = Arrays.stream(reconstructed.toString().split("\\r?\\n"))
+                    .collect(Collectors.joining("\n"));
+            String reconstructedHash = hashService.calculateMessageHash(reconstructedForHash);
+
+            Log log = new Log(deviceId, messages, logType, reconstructedHash);
             logRepository.save(log);
 
             System.out.println("로그 저장 완료: " + deviceId + ", " + logType);

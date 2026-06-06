@@ -121,5 +121,15 @@
             android:name=".service.FileSystemLogger"
             android:enabled="true"
             android:exported="false" />
+
+        <receiver
+            android:name=".receiver.TestEventReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.example.logcat.INJECT_APP_EXECUTION" />
+                <action android:name="com.example.logcat.INJECT_BLUETOOTH" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
