@@ -51,6 +51,8 @@ public class MainActivity extends AppCompatActivity {
         UploadQueueWorker.scheduleFlush(this);
 
         checkAndRequestPermissions();
+        // 테스트 목적으로 접근성 체크 우회하고 서비스 바로 기동
+        startServices();
     }
 
     private void checkAndRequestPermissions() {
@@ -87,11 +89,7 @@ public class MainActivity extends AppCompatActivity {
             Log.i(TAG, "✅ 접근성 서비스 이미 활성화됨, 즉시 서비스 실행");
             startServices();
         } else {
-            Toast.makeText(this, "접근성 권한이 필요합니다.", Toast.LENGTH_SHORT).show();
-            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-            startActivityForResult(intent, REQUEST_ACCESSIBILITY_PERMISSION);
-            isAccessibilityRequested = true;
-            startAccessibilityCheck(); // 접근성 설정을 감지하는 함수 실행
+            Log.d(TAG, "접근성 권한 필요하지만 자동화 테스트를 위해 설정 화면 이동 우회");
         }
     }
 

@@ -67,6 +67,75 @@ public class LogService {
 
 
 
+    public String appendDecryptedLog(String deviceId, String logType, String decryptedLogContent, MultipartFile hashFile) {
+        try {
+            // 1. 해시 파일 검증
+            String expectedHash = null;
+            if (hashFile != null && !hashFile.isEmpty()) {
+                expectedHash = new BufferedReader(new InputStreamReader(hashFile.getInputStream(), StandardCharsets.UTF_8))
+                        .lines()
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalArgumentException("해시 파일에 내용이 없습니다."));
+            }
+
+            // 2. 복호화된 컨텐츠로 해시 계산 및 비교
+            String computedHash = hashService.calculateMessageHash(decryptedLogContent);
+            if (expectedHash != null && !computedHash.equals(expectedHash)) {
+                System.out.println("Expected Hash: " + expectedHash);
+                System.out.println("Computed Hash: " + computedHash);
+                throw new IllegalArgumentException("로그 컨텐츠의 해시값이 hash.txt의 해시값과 일치하지 않습니다.");
+            }
+
+            // 3. 로그 라인 읽기 및 파싱
+            String[] lines = decryptedLogContent.split("\\r?\\n");
+            if (lines.length == 0 || (lines.length == 1 && lines[0].isEmpty())) {
+                throw new IllegalArgumentException("로그 내용이 비어 있습니다.");
+            }
+
+            List<Message> messages = new ArrayList<>();
+            for (String line : lines) {
+                if (line.trim().isEmpty()) continue;
+                String[] logParts = line.split(" ", 3);
+                if (logParts.length < 3) continue;
+
+                try {
+                    String dateTimeString = logParts[0] + " " + logParts[1];
+                    LocalDateTime deviceTimestamp = LocalDateTime.parse(dateTimeString, FORMATTER);
+                    String content = logParts[2];
+
+                    Matcher matcher = TIMESTAMP_PATTERN.matcher(content);
+                    LocalDateTime serverTimestamp = null;
+                    if (matcher.matches()) {
+                        String mainMessage = matcher.group(1);
+                        String serverTimestampString = matcher.group(2);
+                        if (serverTimestampString != null) {
+                            serverTimestamp = LocalDateTime.parse(serverTimestampString, FORMATTER);
+                        }
+                        content = mainMessage.trim();
+                    }
+
+                    Message message = new Message(content, deviceTimestamp, serverTimestamp);
+                    messages.add(message);
+                } catch (DateTimeParseException e) {
+                    throw new IllegalArgumentException("날짜 형식이 올바르지 않습니다: " + logParts[0] + " " + logParts[1]);
+                }
+            }
+
+            if (messages.isEmpty()) {
+                throw new IllegalArgumentException("유효한 로그 메시지가 없습니다.");
+            }
+
+            Log log = new Log(deviceId, messages, logType, computedHash);
+            logRepository.save(log);
+
+            System.out.println("로그 저장 완료: " + deviceId + ", " + logType);
+            return "SUCCESS";
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        }
+    }
+
     @Async
     public String appendLogAsync(MultipartFile logFile, MultipartFile hashFile) {
         try {

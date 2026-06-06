@@ -44,7 +44,7 @@ import okhttp3.Response;
 public class ServerTransmitter {
 
     private static final String TAG = "ServerTransmitter";
-    private static final String BASE_URL = "https://220.149.236.152:52346";
+    private static final String BASE_URL = "http://10.0.2.2:8080";
     private static final String UPLOAD_PATH = "/logs/upload";
     private static final String TIMESTAMP_PATH = "/logs/timestamp";
     private static final String SERVERKEY_PATH = "/logs/serverkey";
@@ -73,6 +73,15 @@ public class ServerTransmitter {
     private synchronized OkHttpClient getHttpClient() {
         if (httpClient != null) return httpClient;
         try {
+            if (BASE_URL.startsWith("http://")) {
+                httpClient = new OkHttpClient.Builder()
+                        .connectTimeout(15, TimeUnit.SECONDS)
+                        .readTimeout(30, TimeUnit.SECONDS)
+                        .writeTimeout(30, TimeUnit.SECONDS)
+                        .build();
+                return httpClient;
+            }
+
             // 클라이언트 인증서 키스토어 로드 (Android Keystore)
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
             keyStore.load(null);

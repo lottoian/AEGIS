@@ -44,6 +44,15 @@ public class LogRepository {
         return mongoTemplate.find(query, Log.class);
     }
 
+    public List<Log> findAll() {
+        return mongoTemplate.findAll(Log.class);
+    }
+
+    public void deleteById(String id) {
+        Query query = new Query(Criteria.where("id").is(id));
+        mongoTemplate.remove(query, Log.class);
+    }
+
     public void deleteAll() {
         mongoTemplate.remove(new Query(), Log.class);
     }

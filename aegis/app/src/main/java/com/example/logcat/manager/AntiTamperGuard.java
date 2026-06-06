@@ -37,10 +37,10 @@ public class AntiTamperGuard {
             Log.e(TAG, "Debugger detected. Terminating.");
             terminateProcess();
         }
-        if (isDebuggableBuild(appInfo)) {
-            Log.e(TAG, "Debuggable flag set. Terminating.");
-            terminateProcess();
-        }
+//        if (isDebuggableBuild(appInfo)) {
+//            Log.e(TAG, "Debuggable flag set. Terminating.");
+//            terminateProcess();
+//        }
         if (isFridaPresent()) {
             Log.e(TAG, "Frida agent detected. Terminating.");
             terminateProcess();

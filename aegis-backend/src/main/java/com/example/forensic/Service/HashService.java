@@ -55,7 +55,7 @@ public class HashService {
 
 
 
-    private String calculateMessageHash(String message) throws NoSuchAlgorithmException {
+    public String calculateMessageHash(String message) throws NoSuchAlgorithmException {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
 
         byte[] textBytes = message.getBytes(StandardCharsets.UTF_8);
