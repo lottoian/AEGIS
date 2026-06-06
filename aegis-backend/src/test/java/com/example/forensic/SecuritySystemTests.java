@@ -19,6 +19,11 @@ import javax.crypto.KeyAgreement;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import com.example.forensic.Service.LogService;
+import com.example.forensic.Repository.LogRepository;
+import java.time.LocalDateTime;
+import org.springframework.mock.web.MockMultipartFile;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
@@ -29,6 +34,45 @@ class SecuritySystemTests {
 
     @Autowired
     private HashService hashService;
+
+    @Autowired
+    private LogService logService;
+
+    @Autowired
+    private LogRepository logRepository;
+
+    @Test
+    void testReportGenerationHashMatch() throws Exception {
+        logRepository.deleteAll();
+
+        String deviceId = "test_device_hash_match";
+        String logType = "SecurityTamperLog";
+        String decryptedLogContent = 
+            "2026-06-06 14:10:00 Frida instrumentation tool detected in memory.\n" +
+            "2026-06-06 14:10:01 Terminating execution due to security policy violations.";
+
+        String expectedHash = hashService.calculateMessageHash(decryptedLogContent);
+
+        MockMultipartFile hashFile = new MockMultipartFile(
+                "hashFile",
+                "hash.txt",
+                "text/plain",
+                expectedHash.getBytes(StandardCharsets.UTF_8)
+        );
+
+        String appendResult = logService.appendDecryptedLog(deviceId, logType, decryptedLogContent, hashFile);
+        assertEquals("SUCCESS", appendResult);
+
+        LocalDateTime start = LocalDateTime.of(2026, 6, 6, 0, 0, 0);
+        LocalDateTime end = LocalDateTime.of(2026, 6, 6, 23, 59, 59);
+        String reportPath = logService.analyzeLog(deviceId, start, end);
+
+        java.nio.file.Path logFilePath = java.nio.file.Paths.get("/app/reports", "logs_" + expectedHash + ".txt");
+        assertTrue(java.nio.file.Files.exists(logFilePath));
+
+        String calculatedFileHash = hashService.calculateFileHash(logFilePath);
+        assertEquals(expectedHash, calculatedFileHash);
+    }
 
     @Test
     void testE2EDecryptionAndVerification() throws Exception {
