@@ -37,7 +37,7 @@ public class AntiTamperGuard {
             Log.e(TAG, "Debugger detected. Terminating.");
             terminateProcess();
         }
-        if (isDebuggableBuild(appInfo)) {
+        if (!com.example.logcat.BuildConfig.DEBUG && isDebuggableBuild(appInfo)) {
             Log.e(TAG, "Debuggable flag set. Terminating.");
             terminateProcess();
         }

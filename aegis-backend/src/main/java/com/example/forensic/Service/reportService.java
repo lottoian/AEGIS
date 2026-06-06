@@ -31,11 +31,15 @@ import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.springframework.beans.factory.annotation.Value;
+
 @Service
 public class reportService {
 
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    @Value("${report.dir:/app/reports}")
+    private String directoryPath;
 
     @Autowired
     HashService hashService;
@@ -51,7 +55,6 @@ public class reportService {
         logTypeColors.put("AppExecutionLog", new DeviceRgb(239, 139, 71));
 
         String fileName = "custom_report_" + deviceId + ".pdf";
-        String directoryPath = "/app/reports";
         String filePath = directoryPath + "/" + fileName;
 
         Files.createDirectories(Paths.get(directoryPath));

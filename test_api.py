@@ -1,6 +1,7 @@
+import os
 import requests
 
-SERVER_URL = "http://localhost:8080"
+SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8080")
 
 print("1. Testing Log Retrieval API...")
 try:

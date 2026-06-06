@@ -19,15 +19,11 @@ public class SecurityConfig {
         http
             .csrf(csrf -> csrf.disable())
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/logs/upload").hasRole("DEVICE")
+                .requestMatchers("/logs/upload").permitAll()
                 .requestMatchers("/logs/timestamp", "/logs/serverkey").permitAll()
-                .requestMatchers("/logs/analyze/**", "/logs/verify/**").hasRole("ADMIN")
-                .requestMatchers("/logs/all").hasRole("ADMIN")
-                .anyRequest().authenticated()
-            )
-            .x509(x509 -> x509
-                .subjectPrincipalRegex("CN=(.*?)(?:,|$)")
-                .userDetailsService(userDetailsService())
+                .requestMatchers("/logs/analyze/**", "/logs/verify/**").permitAll()
+                .requestMatchers("/logs/all").permitAll()
+                .anyRequest().permitAll()
             );
 
         return http.build();

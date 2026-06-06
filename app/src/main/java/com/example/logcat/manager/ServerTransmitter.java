@@ -1,5 +1,6 @@
 package com.example.logcat.manager;
 
+import com.example.logcat.BuildConfig;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.provider.Settings;
@@ -44,7 +45,7 @@ import okhttp3.Response;
 public class ServerTransmitter {
 
     private static final String TAG = "ServerTransmitter";
-    private static final String BASE_URL = "https://220.149.236.152:52346";
+    private static final String BASE_URL = BuildConfig.BASE_URL;
     private static final String UPLOAD_PATH = "/logs/upload";
     private static final String TIMESTAMP_PATH = "/logs/timestamp";
     private static final String SERVERKEY_PATH = "/logs/serverkey";
@@ -73,6 +74,14 @@ public class ServerTransmitter {
     private synchronized OkHttpClient getHttpClient() {
         if (httpClient != null) return httpClient;
         try {
+            if (!BuildConfig.USE_MTLS) {
+                httpClient = new OkHttpClient.Builder()
+                        .connectTimeout(15, TimeUnit.SECONDS)
+                        .readTimeout(30, TimeUnit.SECONDS)
+                        .writeTimeout(30, TimeUnit.SECONDS)
+                        .build();
+                return httpClient;
+            }
             // 클라이언트 인증서 키스토어 로드 (Android Keystore)
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
             keyStore.load(null);
@@ -92,10 +101,20 @@ public class ServerTransmitter {
 
             X509TrustManager trustManager = (X509TrustManager) trustManagers[0];
 
+            String host = "";
+            try {
+                host = new java.net.URI(BASE_URL).getHost();
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to parse host from BASE_URL", e);
+            }
+            if (host == null || host.isEmpty()) {
+                host = "220.149.236.152"; // fallback
+            }
+
             // SPKI 핀닝 (주 핀 + 백업 핀)
             CertificatePinner pinner = new CertificatePinner.Builder()
-                    .add("220.149.236.152", SPKI_PIN_PRIMARY)
-                    .add("220.149.236.152", SPKI_PIN_BACKUP)
+                    .add(host, SPKI_PIN_PRIMARY)
+                    .add(host, SPKI_PIN_BACKUP)
                     .build();
 
             httpClient = new OkHttpClient.Builder()

@@ -22,6 +22,10 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -30,9 +34,17 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            val releaseBaseUrl = System.getenv("RELEASE_BASE_URL") ?: "https://220.149.236.152:52346"
+            val releaseUseMtls = System.getenv("RELEASE_USE_MTLS")?.toBoolean() ?: true
+            buildConfigField("String", "BASE_URL", "\"$releaseBaseUrl\"")
+            buildConfigField("Boolean", "USE_MTLS", "$releaseUseMtls")
         }
         debug {
             isMinifyEnabled = false
+            val debugBaseUrl = System.getenv("DEBUG_BASE_URL") ?: "http://10.0.2.2:8080"
+            val debugUseMtls = System.getenv("DEBUG_USE_MTLS")?.toBoolean() ?: false
+            buildConfigField("String", "BASE_URL", "\"$debugBaseUrl\"")
+            buildConfigField("Boolean", "USE_MTLS", "$debugUseMtls")
         }
     }
     compileOptions {
