@@ -269,14 +269,64 @@ public class ServerTransmitter {
                 String logType = parts.length > 1 ? parts[1].replace(".txt", "") : "Unknown";
 
                 byte[] content = java.nio.file.Files.readAllBytes(logFile.toPath());
-                byte[] hashContent = java.nio.file.Files.readAllBytes(hashFile.toPath());
-                String logText = new String(content, java.nio.charset.StandardCharsets.UTF_8);
-                String chainHash = new String(hashContent, java.nio.charset.StandardCharsets.UTF_8).trim();
-
+                String rawText = new String(content, java.nio.charset.StandardCharsets.UTF_8);
                 Arrays.fill(content, (byte) 0);
-                Arrays.fill(hashContent, (byte) 0);
 
-                success = uploadEncryptedLog(deviceId, logType, logText, chainHash);
+                // at-rest 복호화: 각 라인은 CryptoManager.encryptString()으로 암호화되어 있음
+                // 복호화하여 평문 로그를 복원
+                StringBuilder plainBuilder = new StringBuilder();
+                CryptoManager crypto = CryptoManager.getInstance();
+                String[] lines = rawText.split("\\n");
+                int validLines = 0;
+                for (String line : lines) {
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty()) continue;
+                    try {
+                        String plainLine = crypto.decryptToString(trimmed);
+                        plainBuilder.append(plainLine).append("\n");
+                        validLines++;
+                    } catch (Exception decryptEx) {
+                        // 복호화 실패 시 해당 라인은 이미 평문이거나 손상됨 → 그대로 포함
+                        Log.w(TAG, "Line decryption failed, using as-is: " + decryptEx.getMessage());
+                        plainBuilder.append(trimmed).append("\n");
+                        validLines++;
+                    }
+                }
+
+                if (validLines == 0) {
+                    Log.w(TAG, "No valid log lines found in: " + filename);
+                    callback.onFailure();
+                    return;
+                }
+
+                String plainLogText = plainBuilder.toString();
+
+                // 서버의 해시 계산 방식과 동일하게:
+                // sanitizedContent = lines.split("\\r?\\n").joining("\n") → 마지막 \n 없음
+                // 따라서 plainLogText의 trailing newline을 제거 후 해시 계산
+                String sanitizedForHash = plainLogText.replaceAll("\\r?\\n$", "");
+
+                // 복원된 평문에 대한 SHA-256 해시를 서버와 동일한 방식으로 계산
+                String chainHash;
+                try {
+                    java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                    byte[] hashBytes = md.digest(sanitizedForHash.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    StringBuilder hexSb = new StringBuilder();
+                    for (byte b : hashBytes) {
+                        String hex = Integer.toHexString(0xff & b);
+                        if (hex.length() == 1) hexSb.append('0');
+                        hexSb.append(hex);
+                    }
+                    chainHash = hexSb.toString();
+                } catch (Exception hashEx) {
+                    Log.e(TAG, "Hash computation failed, falling back to file hash", hashEx);
+                    byte[] hashContent = java.nio.file.Files.readAllBytes(hashFile.toPath());
+                    chainHash = new String(hashContent, java.nio.charset.StandardCharsets.UTF_8).trim();
+                    Arrays.fill(hashContent, (byte) 0);
+                }
+
+                Log.d(TAG, "sendFilesAsync: decrypted " + validLines + " lines, chainHash=" + chainHash.substring(0, Math.min(16, chainHash.length())) + "...");
+                success = uploadEncryptedLog(deviceId, logType, sanitizedForHash, chainHash);
             } catch (Exception e) {
                 Log.e(TAG, "sendFilesAsync error", e);
             }

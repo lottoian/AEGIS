@@ -83,6 +83,12 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void requestAccessibilityPermission() {
+        // 디버그 빌드에서는 접근성 서비스 확인 없이 바로 서비스 시작
+        if (com.example.logcat.BuildConfig.DEBUG) {
+            Log.i(TAG, "✅ [DEBUG] 접근성 서비스 체크 우회, 즉시 서비스 실행");
+            startServices();
+            return;
+        }
         if (isAccessibilityServiceEnabled()) {
             Log.i(TAG, "✅ 접근성 서비스 이미 활성화됨, 즉시 서비스 실행");
             startServices();
@@ -93,6 +99,7 @@ public class MainActivity extends AppCompatActivity {
             isAccessibilityRequested = true;
             startAccessibilityCheck(); // 접근성 설정을 감지하는 함수 실행
         }
+
     }
 
     /**
