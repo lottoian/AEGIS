@@ -234,6 +234,73 @@ adb backup, 루팅 후 파일 복사 등으로 DB + SharedPreferences를
 
 ---
 
+## NAS 배포 구성
+
+### Docker Compose 볼륨 구조
+
+```
+NAS 호스트
+├── docker volume: mongo_data      → MongoDB /data/db        (DB 데이터 영속화)
+├── docker volume: reports_data    → /app/reports            (PDF 보고서 영속화)
+└── docker volume: keys_data       → /app/keys               (X25519 서버 키 영속화)
+```
+
+### X25519 서버 키 영속화
+
+```
+최초 컨테이너 기동
+    → /app/keys/server_x25519_priv.der 없음
+    → 키 신규 생성 후 파일 저장 (소유자만 읽기 권한)
+
+이후 재시작 / 업데이트
+    → /app/keys/*.der 파일 로드 → 기존 키 유지
+    → Android 클라이언트가 캐싱한 서버 공개키가 계속 유효
+```
+
+> keys_data 볼륨을 삭제하면 키가 바뀌어 **모든 Android 클라이언트가 서버 키를 재요청**해야 한다.  
+> 키 교체가 필요한 경우: 볼륨 삭제 → 컨테이너 재시작 → 클라이언트 앱 재설치 또는 캐시 초기화.
+
+### 환경변수 체크리스트 (.env)
+
+| 변수 | 필수 | 설명 |
+|------|------|------|
+| `MONGO_USER` | ✅ | MongoDB 계정명 (기본값 root 사용 금지) |
+| `MONGO_PASSWORD` | ✅ | MongoDB 비밀번호 (강력한 랜덤값 사용) |
+| `MONGO_DB` | ✅ | DB 이름 |
+| `ADMIN_TOKEN` | ✅ | `DELETE /logs/all` 호출 시 `X-Admin-Token` 헤더값 |
+| `APP_PORT` | — | 외부 노출 포트 (기본 8080) |
+| `MONGO_PORT` | — | MongoDB 외부 포트 (내부망 전용이면 제거 권장) |
+
+### 배포 순서
+
+```bash
+# 1. 환경변수 파일 준비
+cp .env.example .env
+vi .env   # MONGO_PASSWORD, ADMIN_TOKEN 실제 값으로 교체
+
+# 2. 빌드 및 기동
+docker compose up -d --build
+
+# 3. 키 생성 확인 (최초 1회)
+docker logs forensic-app | grep "X25519"
+# → [CryptoService] X25519 키 신규 생성 완료: /app/keys
+
+# 4. 이후 재기동 시
+docker compose restart app
+docker logs forensic-app | grep "X25519"
+# → [CryptoService] X25519 키 로드 완료: /app/keys/server_x25519_priv.der
+```
+
+### 보안 체크리스트
+
+- [ ] `.env`가 `.gitignore`에 포함되어 있는지 확인
+- [ ] `MONGO_PORT` 외부 노출 최소화 (NAS 내부망에서만 접근)
+- [ ] NAS 방화벽에서 `APP_PORT`만 허용, MongoDB 포트는 차단
+- [ ] `ADMIN_TOKEN`은 `openssl rand -hex 32`로 생성
+- [ ] `keys_data` 볼륨 정기 백업
+
+---
+
 ## 전체 데이터 흐름
 
 ```

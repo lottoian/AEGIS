@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.*;
 import java.security.spec.*;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.util.zip.GZIPInputStream;
 import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
@@ -18,16 +20,51 @@ import javax.crypto.spec.SecretKeySpec;
 @Service
 public class CryptoService {
 
+    private static final String KEY_DIR  = System.getenv().getOrDefault("KEY_STORE_DIR", "/app/keys");
+    private static final String PRIV_FILE = KEY_DIR + "/server_x25519_priv.der";
+    private static final String PUB_FILE  = KEY_DIR + "/server_x25519_pub.der";
+
     private final KeyPair serverKeyPair;
 
     public CryptoService() {
         try {
-            // 서버 고정 X25519 키 쌍 생성 (실 운영 시 Vault 또는 Keystore에서 로드해야 함)
-            KeyPairGenerator kpg = KeyPairGenerator.getInstance("X25519");
-            this.serverKeyPair = kpg.generateKeyPair();
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("X25519 KeyPairGenerator 초기화 실패", e);
+            this.serverKeyPair = loadOrGenerateKeyPair();
+        } catch (Exception e) {
+            throw new RuntimeException("X25519 KeyPair 초기화 실패", e);
         }
+    }
+
+    /**
+     * KEY_STORE_DIR에 키 파일이 있으면 로드, 없으면 생성 후 저장.
+     * NAS 배포 시 해당 디렉터리를 볼륨으로 마운트하면 재시작해도 키가 유지된다.
+     */
+    private KeyPair loadOrGenerateKeyPair() throws Exception {
+        java.io.File privFile = new java.io.File(PRIV_FILE);
+        java.io.File pubFile  = new java.io.File(PUB_FILE);
+
+        if (privFile.exists() && pubFile.exists()) {
+            byte[] privBytes = java.nio.file.Files.readAllBytes(privFile.toPath());
+            byte[] pubBytes  = java.nio.file.Files.readAllBytes(pubFile.toPath());
+            KeyFactory kf = KeyFactory.getInstance("X25519");
+            PrivateKey priv = kf.generatePrivate(new PKCS8EncodedKeySpec(privBytes));
+            PublicKey  pub  = kf.generatePublic(new X509EncodedKeySpec(pubBytes));
+            System.out.println("[CryptoService] X25519 키 로드 완료: " + PRIV_FILE);
+            return new KeyPair(pub, priv);
+        }
+
+        // 최초 실행: 키 생성 후 저장
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("X25519");
+        KeyPair kp = kpg.generateKeyPair();
+
+        new java.io.File(KEY_DIR).mkdirs();
+        java.nio.file.Files.write(privFile.toPath(), kp.getPrivate().getEncoded());
+        java.nio.file.Files.write(pubFile.toPath(),  kp.getPublic().getEncoded());
+        // 키 파일 소유자만 읽도록 권한 제한
+        privFile.setReadable(false, false);
+        privFile.setReadable(true, true);
+        privFile.setWritable(false, false);
+        System.out.println("[CryptoService] X25519 키 신규 생성 완료: " + KEY_DIR);
+        return kp;
     }
 
     public byte[] getServerPublicKeyBytes() {
@@ -109,21 +146,6 @@ public class CryptoService {
         // 7. HKDF-SHA256을 통한 세션 키 유도 (AES-256 용 32바이트)
         byte[] sessionKeyBytes = deriveHKDFKey(sharedSecret);
         SecretKey sessionKey = new SecretKeySpec(sessionKeyBytes, "AES");
-
-        // [DEBUG LOGS]
-        StringBuilder hexEphemeral = new StringBuilder();
-        for (byte b : ephemeralKeyBytes) hexEphemeral.append(String.format("%02x", b));
-        StringBuilder hexShared = new StringBuilder();
-        for (byte b : sharedSecret) hexShared.append(String.format("%02x", b));
-        StringBuilder hexSession = new StringBuilder();
-        for (byte b : sessionKeyBytes) hexSession.append(String.format("%02x", b));
-        StringBuilder hexIv = new StringBuilder();
-        for (byte b : iv) hexIv.append(String.format("%02x", b));
-        
-        System.out.println("[DEBUG] Server Ephemeral Key (Raw Hex): " + hexEphemeral.toString());
-        System.out.println("[DEBUG] Server Shared Secret (Hex): " + hexShared.toString());
-        System.out.println("[DEBUG] Server Session Key (Hex): " + hexSession.toString());
-        System.out.println("[DEBUG] Server IV (Hex): " + hexIv.toString());
 
         // 8. AES-256-GCM 복호화
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");

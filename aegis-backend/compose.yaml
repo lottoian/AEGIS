@@ -1,31 +1,56 @@
 version: '3.8'
 
 services:
-  # Spring Boot 애플리케이션
   app:
     build: .
     container_name: forensic-app
+    restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${APP_PORT:-8080}:8080"
+    env_file:
+      - .env
     environment:
-      - SPRING_DATA_MONGODB_URI=mongodb://root:example@mongodb:27017/forensic_db?authSource=admin
+      - SPRING_DATA_MONGODB_URI=mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/${MONGO_DB}?authSource=admin
+      - REPORT_DIR=/app/reports
+      - KEY_STORE_DIR=/app/keys
+      - ADMIN_TOKEN=${ADMIN_TOKEN}
+    volumes:
+      - reports_data:/app/reports   # PDF 보고서 영속화
+      - keys_data:/app/keys         # X25519 서버 키 영속화 (재시작해도 키 유지)
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
     networks:
       - forensic_net
 
-  # MongoDB 컨테이너
   mongodb:
     image: mongo:5.0
     container_name: mongodb_forensic
+    restart: unless-stopped
     ports:
-      - "27017:27017"
+      - "${MONGO_PORT:-27017}:27017"
+    env_file:
+      - .env
     environment:
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: example
-      MONGO_INITDB_DATABASE: forensic_db
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
+    volumes:
+      - mongo_data:/data/db         # MongoDB 데이터 영속화
+      - mongo_config:/data/configdb
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - forensic_net
+
+volumes:
+  mongo_data:
+  mongo_config:
+  reports_data:
+  keys_data:
 
 networks:
   forensic_net:

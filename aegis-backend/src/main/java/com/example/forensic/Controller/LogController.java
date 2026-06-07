@@ -6,11 +6,17 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
 import java.security.PublicKey;
 import java.security.cert.X509Certificate;
 import java.time.LocalDateTime;
@@ -18,11 +24,17 @@ import java.time.format.DateTimeFormatter;
 import java.util.regex.Pattern;
 
 @RestController
-@RequestMapping(value = "/logs", produces = "application/json")
+@RequestMapping("/logs")
 public class LogController {
 
     private static final Logger logger = LoggerFactory.getLogger(LogController.class);
     private static final Pattern PATH_VALIDATION_PATTERN = Pattern.compile("^[a-zA-Z0-9_-]{1,64}$");
+
+    @Value("${report.dir:/app/reports}")
+    private String reportDir;
+
+    @Value("${admin.token:}")
+    private String adminToken;
 
     @Autowired
     private LogService logService;
@@ -147,8 +159,37 @@ public class LogController {
         return ResponseEntity.ok(currentTimestamp);
     }
 
+    /**
+     * 생성된 PDF 리포트 다운로드
+     */
+    @GetMapping("/report/{deviceId}")
+    public ResponseEntity<Resource> downloadReport(@PathVariable String deviceId) {
+        if (!PATH_VALIDATION_PATTERN.matcher(deviceId).matches()) {
+            return ResponseEntity.badRequest().build();
+        }
+        File pdfFile = new File(reportDir, "custom_report_" + deviceId + ".pdf");
+        if (!pdfFile.exists()) {
+            return ResponseEntity.notFound().build();
+        }
+        Resource resource = new FileSystemResource(pdfFile);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"report_" + deviceId + ".pdf\"")
+                .body(resource);
+    }
+
     @DeleteMapping("/all")
-    public ResponseEntity<String> deleteAllLogs() {
+    public ResponseEntity<String> deleteAllLogs(
+            @RequestHeader(value = "X-Admin-Token", required = false) String token) {
+        if (adminToken == null || adminToken.isBlank()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body("🚨 ADMIN_TOKEN 환경변수가 설정되지 않아 이 엔드포인트는 비활성화되어 있습니다.");
+        }
+        if (!adminToken.equals(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body("🚨 인증 실패: 올바른 X-Admin-Token 헤더가 필요합니다.");
+        }
         logService.deleteAll();
         return ResponseEntity.ok("✅ 모든 로그가 삭제되었습니다.");
     }
