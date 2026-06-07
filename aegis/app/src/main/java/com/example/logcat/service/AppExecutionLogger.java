@@ -154,7 +154,8 @@ public class AppExecutionLogger extends AccessibilityService {
     private void sendLogMessage(String message) throws IOException, NoSuchAlgorithmException {
         String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
         serverTimestamp = LogHandler.resolveServerTimestamp(this);
-        String fullMessage = timestamp + message + " ; serverTimestamp: " + serverTimestamp;
+        String fullMessage = timestamp + message
+                + (serverTimestamp != null ? " ; serverTimestamp: " + serverTimestamp : "");
 
         logHandler.appendToLogFile(fullMessage + "\n");
         logHandler.checkFileSizeAndHandle(logHandler.getFilename());

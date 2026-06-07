@@ -82,9 +82,9 @@ public class ServerTransmitter {
         try {
             if (BASE_URL.startsWith("http://")) {
                 httpClient = new OkHttpClient.Builder()
-                        .connectTimeout(15, TimeUnit.SECONDS)
-                        .readTimeout(30, TimeUnit.SECONDS)
-                        .writeTimeout(30, TimeUnit.SECONDS)
+                        .connectTimeout(5, TimeUnit.SECONDS)
+                        .readTimeout(15, TimeUnit.SECONDS)
+                        .writeTimeout(15, TimeUnit.SECONDS)
                         .build();
                 return httpClient;
             }
@@ -141,7 +141,9 @@ public class ServerTransmitter {
             cryptoPipeline = new ClientCryptoPipeline(serverKey, deviceId);
             return cryptoPipeline;
         } catch (Exception e) {
-            Log.e(TAG, "CryptoPipeline init failed", e);
+            Log.w(TAG, "CryptoPipeline init failed (서버 불안정): " + e.getMessage());
+            cachedServerPublicKey = null;
+            cryptoPipeline = null;
             return null;
         }
     }
@@ -350,12 +352,24 @@ public class ServerTransmitter {
     private static final java.text.SimpleDateFormat TS_FMT =
             new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault());
 
+    // 인메모리 타임스탬프 캐시 (60초 유효)
+    private static volatile String inMemoryTs = null;
+    private static volatile long inMemoryTsFetchedAt = 0;
+    private static final long TS_CACHE_TTL_MS = 5 * 60_000; // 5분
+
     /**
      * 서버 타임스탬프 반환.
-     * - 온라인: 실제 서버 시각 반환 + (서버시각, 기기시각) 쌍 캐싱
-     * - 오프라인: 마지막 캐시 기반 추정값 반환 "[estimated]" 접두사 포함
+     * - 60초 이내 캐시가 있으면 즉시 반환 (네트워크 요청 없음)
+     * - 캐시 만료 시 서버에서 fetch
+     * - 온라인: 실제 서버 시각 반환 + 캐싱
+     * - 오프라인: null 반환
      */
     public static String getServerTimestamp() {
+        long now = System.currentTimeMillis();
+        if (inMemoryTs != null && (now - inMemoryTsFetchedAt) < TS_CACHE_TTL_MS) {
+            return inMemoryTs;
+        }
+
         final String[] result = {null};
         CountDownLatch latch = new CountDownLatch(1);
 
@@ -376,7 +390,7 @@ public class ServerTransmitter {
                     result[0] = sb.toString().trim();
                 }
             } catch (Exception e) {
-                Log.e(TAG, "getServerTimestamp failed", e);
+                Log.d(TAG, "getServerTimestamp failed: " + e.getMessage());
             } finally {
                 latch.countDown();
             }
@@ -386,7 +400,18 @@ public class ServerTransmitter {
             latch.await(6, TimeUnit.SECONDS);
         } catch (InterruptedException ignored) {
         }
-        return result[0]; // 호출 측에서 context 없이 캐싱 불가 — 캐싱은 saveServerTimestampCache() 사용
+
+        if (result[0] != null) {
+            inMemoryTs = result[0];
+            inMemoryTsFetchedAt = System.currentTimeMillis();
+        }
+        return result[0];
+    }
+
+    /** 온/오프라인 전환 시 인메모리 캐시 무효화 (다음 호출에서 서버 재fetch). */
+    public static void invalidateTimestampCache() {
+        inMemoryTs = null;
+        inMemoryTsFetchedAt = 0;
     }
 
     /** 온라인 성공 시 (서버시각, 기기시각) 쌍 캐싱. */
@@ -418,6 +443,13 @@ public class ServerTransmitter {
 
         long elapsed = System.currentTimeMillis() - lastDeviceMs;
         long estimatedMs = lastServerMs + elapsed;
+        // 추정값이 현재 기기 시각보다 24시간 이상 과거면 캐시가 오염된 것 → null
+        if (estimatedMs < System.currentTimeMillis() - 24 * 60 * 60 * 1000L) {
+            Log.w(TAG, "getEstimatedServerTimestamp: 추정값이 24h 이상 과거 → 캐시 무효화");
+            context.getSharedPreferences(PREFS_TS, android.content.Context.MODE_PRIVATE)
+                    .edit().clear().apply();
+            return null;
+        }
         return "[estimated] " + TS_FMT.format(new java.util.Date(estimatedMs));
     }
 

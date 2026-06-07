@@ -178,7 +178,8 @@ public class CallingLogger extends Service {
                 + " End Time: " + endTimeFormatted
                 + " Duration: " + durationSeconds + " seconds";
         serverTimestamp = LogHandler.resolveServerTimestamp(this);
-        String fullMessage = timestamp + message + " ; serverTimestamp: " + serverTimestamp;
+        String fullMessage = timestamp + message
+                + (serverTimestamp != null ? " ; serverTimestamp: " + serverTimestamp : "");
 
         logHandler.appendToLogFile(fullMessage + "\n");
         logHandler.checkFileSizeAndHandle(logHandler.getFilename());
