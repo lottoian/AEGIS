@@ -252,16 +252,23 @@ public class FileSystemLogger extends Service {
      */
     private void sendLogMessage(String message) throws IOException, NoSuchAlgorithmException {
         String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
-        serverTimestamp = ServerTransmitter.getServerTimestamp();
+        serverTimestamp = LogHandler.resolveServerTimestamp(this);
+        String fullMessage = timestamp + " " + message + " ; serverTimestamp: " + serverTimestamp;
 
-        String messageForLog = timestamp + " " + message + " ; serverTimestamp: " + serverTimestamp + "\n";
+        logHandler.appendToLogFile(fullMessage + "\n");
+        String chainHash = logHandler.getCurrentChainHash();
+        String deviceId = LogHandler.getAndroidID(this, getContentResolver());
 
-        logHandler.appendToLogFile(messageForLog);
-
-        Path logFilePath = logHandler.getLogFilePath();
-        String hash = hashGenerator.generateSHA256HashFromFile(logFilePath);
-        logHandler.updateHashFile(hash);
-
-        logHandler.checkFileSizeAndHandle(logHandler.getFilename());
+        serverTransmitter.sendLogAsync(deviceId, "FileLog", fullMessage, chainHash,
+            new ServerTransmitter.FileTransferCallback() {
+                @Override
+                public void onSuccess() {
+                    logHandler.clearLogFile();
+                }
+                @Override
+                public void onFailure() {
+                    // 오프라인 큐 적재됨, .txt 유지
+                }
+            });
     }
 }

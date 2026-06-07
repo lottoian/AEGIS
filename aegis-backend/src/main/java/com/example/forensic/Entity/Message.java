@@ -2,7 +2,6 @@ package com.example.forensic.Entity;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.*;
-import org.springframework.data.annotation.Id;
 
 import java.time.LocalDateTime;
 
@@ -11,13 +10,28 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 @Getter
 @Setter
+public class Message {
 
-public class Message { // 메시지를 보낸 주체
+    private String content;
 
-    private String content;              // 실제 메시지 내용
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime deviceTimestamp;     // 메시지 생성 시간
+    private LocalDateTime deviceTimestamp;
+
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime serverTimestamp;
 
+    /** serverTimestamp가 캐시 기반 추정값이면 true */
+    private boolean estimatedServerTimestamp;
+
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime transmissionTimestamp;
+
+    /** 기존 호환용 생성자 */
+    public Message(String content, LocalDateTime deviceTimestamp, LocalDateTime serverTimestamp) {
+        this.content = content;
+        this.deviceTimestamp = deviceTimestamp;
+        this.serverTimestamp = serverTimestamp;
+        this.estimatedServerTimestamp = false;
+        this.transmissionTimestamp = null;
+    }
 }

@@ -12,6 +12,7 @@ import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
 import com.example.logcat.manager.CryptoManager;
+import com.example.logcat.manager.LogHandler;
 import com.example.logcat.manager.ServerTransmitter;
 
 import java.util.List;
@@ -56,11 +57,18 @@ public class UploadQueueWorker extends Worker {
             try {
                 // 복호화 후 서버 전송
                 String logContent = cm.decryptToString(entry.encryptedLogContent);
+                // 오프라인 큐 플러시 시 실제 전송 시각을 추가 (오프라인 기간 타임스탬프 보정용)
+                String transmissionTs = ServerTransmitter.getServerTimestamp();
+                if (transmissionTs != null) {
+                    ServerTransmitter.saveServerTimestampCache(ctx, transmissionTs);
+                    logContent = logContent + " ; transmissionTimestamp: " + transmissionTs;
+                }
                 boolean success = transmitter.uploadEncryptedLog(
                         entry.deviceId, entry.logType, logContent, entry.chainHash);
 
                 if (success) {
                     dao.deleteById(entry.id);
+                    LogHandler.clearLogFileStatic(ctx, entry.deviceId, entry.logType);
                     Log.d(TAG, "Flushed offline entry id=" + entry.id);
                 } else {
                     dao.incrementRetry(entry.id);

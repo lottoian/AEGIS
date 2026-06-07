@@ -21,7 +21,6 @@ import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
-import com.example.logcat.manager.HashGenerator;
 import com.example.logcat.manager.LogHandler;
 import com.example.logcat.manager.ServerTransmitter;
 import com.example.logcat.R;
@@ -29,7 +28,6 @@ import com.example.logcat.R;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.nio.file.Path;
 import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -42,7 +40,6 @@ public class AntiForensicLogger extends Service {
     private final Handler handler = new Handler();
     private long lastCheckedTime = System.currentTimeMillis();
     private LogHandler logHandler;
-    private HashGenerator hashGenerator;
     private ServerTransmitter serverTransmitter;
 
     @Override
@@ -54,7 +51,6 @@ public class AntiForensicLogger extends Service {
         Notification notification = getNotification();
         startForeground(1, notification);
 
-        hashGenerator = new HashGenerator();
         serverTransmitter = new ServerTransmitter(this);
         logHandler = new LogHandler(this, serverTransmitter, "AntiForensicLog.txt");
         logHandler.initializeLogFile();
@@ -195,24 +191,27 @@ public class AntiForensicLogger extends Service {
 
     private void sendLogMessage(String message) throws IOException, NoSuchAlgorithmException {
         String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
-        serverTimestamp = ServerTransmitter.getServerTimestamp();
+        serverTimestamp = LogHandler.resolveServerTimestamp(this);
+        String fullMessage = timestamp + message + " ; serverTimestamp: " + serverTimestamp;
 
-        String messageForHash = timestamp + message + " ; serverTimestamp: " + serverTimestamp +"\n";
-        /*
-        * TODO: 개별적으로 구분되는 파일이름으로 변경해야함.
-        *  해시는 파일 자체에 대해 계산해야함. (파일의 경로를 가져옴 -> 텍스트로 변환함 -> 해시 계산함.)
-        *  즉, 먼저 텍스트를 파일에 저장하고 해시 계산한걸 따로 저장해준다.
-        *  그리고, hash.txt에는 기존의 것을 append하지 말고 최신값으로 update해줘야함.
-        * */
+        // 로컬 .txt에 암호화 저장 (해시 체인 갱신 포함)
+        logHandler.appendToLogFile(fullMessage + "\n");
+        String chainHash = logHandler.getCurrentChainHash();
+        String deviceId = LogHandler.getAndroidID(this, getContentResolver());
 
-        logHandler.appendToLogFile(messageForHash);
-        Path logFilePath = logHandler.getLogFilePath();
-
-        String hash = hashGenerator.generateSHA256HashFromFile(logFilePath);
-        logHandler.updateHashFile(hash);
-
-        String fileName = logHandler.getFilename();
-        logHandler.checkFileSizeAndHandle(fileName);
+        serverTransmitter.sendLogAsync(deviceId, "AntiForensicLog", fullMessage, chainHash,
+            new ServerTransmitter.FileTransferCallback() {
+                @Override
+                public void onSuccess() {
+                    // 온라인: 전송 성공 → .txt 초기화 (누적 불필요)
+                    logHandler.clearLogFile();
+                }
+                @Override
+                public void onFailure() {
+                    // 오프라인: sendLogAsync 내부에서 이미 큐 적재됨
+                    // .txt는 로컬 백업으로 유지
+                }
+            });
     }
 
 

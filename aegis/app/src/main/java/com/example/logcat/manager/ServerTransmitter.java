@@ -45,6 +45,13 @@ public class ServerTransmitter {
 
     private static final String TAG = "ServerTransmitter";
     private static final String BASE_URL = "http://220.149.236.152:8888";
+
+    /**
+     * 오프라인 큐 최대 허용 용량 (기본 50MB).
+     * 기업·기관 정책에 따라 이 값을 조정하여 내부 저장소 점유 상한을 설정할 수 있다.
+     * 초과 시 가장 오래된 항목부터 순차적으로 삭제된다 (FIFO eviction).
+     */
+    public static final long MAX_OFFLINE_QUEUE_BYTES = 50L * 1024 * 1024; // 50 MB
     private static final String UPLOAD_PATH = "/logs/upload";
     private static final String TIMESTAMP_PATH = "/logs/timestamp";
     private static final String SERVERKEY_PATH = "/logs/serverkey";
@@ -198,11 +205,18 @@ public class ServerTransmitter {
             // 1. 암호화 파이프라인 (GZIP + ECDH + AES-GCM + ECDSA)
             packetBytes = pipeline.encrypt(logContent);
 
-            // 2. 멀티파트 업로드 (logFile=암호화 패킷, hashFile=chain hash)
+            // 2. 서버가 기대하는 SHA-256(logContent) 계산 (ForwardHashChain H_i와 별개)
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = md.digest(logContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hashBytes) sb.append(String.format("%02x", b));
+            String contentHash = sb.toString();
+
+            // 3. 멀티파트 업로드 (logFile=암호화 패킷, hashFile=SHA-256(content))
             String filename = deviceId + "_" + logType + ".enc";
             RequestBody logBody = RequestBody.create(packetBytes,
                     MediaType.parse("application/octet-stream"));
-            RequestBody hashBody = RequestBody.create(chainHash.getBytes(),
+            RequestBody hashBody = RequestBody.create(contentHash.getBytes(),
                     MediaType.parse("text/plain"));
 
             RequestBody multipart = new MultipartBody.Builder()
@@ -237,7 +251,21 @@ public class ServerTransmitter {
         try {
             String encrypted = CryptoManager.getInstance().encryptString(logContent);
             OfflineLogEntity entity = new OfflineLogEntity(deviceId, logType, encrypted, chainHash);
-            OfflineLogDatabase.getInstance(context).offlineLogDao().insert(entity);
+            com.example.logcat.queue.OfflineLogDao dao =
+                    OfflineLogDatabase.getInstance(context).offlineLogDao();
+            dao.insert(entity);
+
+            // 최대 용량 초과 시 가장 오래된 항목부터 삭제 (FIFO eviction)
+            long totalBytes = dao.totalContentBytes();
+            if (totalBytes > MAX_OFFLINE_QUEUE_BYTES) {
+                int count = dao.countPending();
+                // 전체 항목의 20%를 삭제하여 빈번한 eviction 방지
+                int toDelete = Math.max(1, count / 5);
+                dao.deleteOldest(toDelete);
+                Log.w(TAG, "Offline queue exceeded " + (MAX_OFFLINE_QUEUE_BYTES / 1024 / 1024)
+                        + "MB — evicted " + toDelete + " oldest entries");
+            }
+
             Log.d(TAG, "Queued offline: " + logType);
         } catch (Exception e) {
             Log.e(TAG, "Offline queue insert failed", e);
@@ -307,6 +335,17 @@ public class ServerTransmitter {
     // 서버 타임스탬프 (평문 GET, cleartext URL 사용 불가 → HTTPS)
     // ──────────────────────────────────────────────
 
+    private static final String PREFS_TS = "aegis_ts_cache";
+    private static final String KEY_SERVER_TS = "last_server_ts";   // 마지막 서버 시각 (ms)
+    private static final String KEY_DEVICE_TS = "last_device_ts";   // 그 시점 기기 시각 (ms)
+    private static final java.text.SimpleDateFormat TS_FMT =
+            new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault());
+
+    /**
+     * 서버 타임스탬프 반환.
+     * - 온라인: 실제 서버 시각 반환 + (서버시각, 기기시각) 쌍 캐싱
+     * - 오프라인: 마지막 캐시 기반 추정값 반환 "[estimated]" 접두사 포함
+     */
     public static String getServerTimestamp() {
         final String[] result = {null};
         CountDownLatch latch = new CountDownLatch(1);
@@ -325,7 +364,7 @@ public class ServerTransmitter {
                     String line;
                     while ((line = reader.readLine()) != null) sb.append(line);
                     reader.close();
-                    result[0] = sb.toString();
+                    result[0] = sb.toString().trim();
                 }
             } catch (Exception e) {
                 Log.e(TAG, "getServerTimestamp failed", e);
@@ -338,7 +377,39 @@ public class ServerTransmitter {
             latch.await(6, TimeUnit.SECONDS);
         } catch (InterruptedException ignored) {
         }
-        return result[0];
+        return result[0]; // 호출 측에서 context 없이 캐싱 불가 — 캐싱은 saveServerTimestampCache() 사용
+    }
+
+    /** 온라인 성공 시 (서버시각, 기기시각) 쌍 캐싱. */
+    public static void saveServerTimestampCache(android.content.Context context, String serverTs) {
+        try {
+            long serverMs = TS_FMT.parse(serverTs).getTime();
+            android.content.SharedPreferences prefs =
+                    context.getSharedPreferences(PREFS_TS, android.content.Context.MODE_PRIVATE);
+            prefs.edit()
+                    .putLong(KEY_SERVER_TS, serverMs)
+                    .putLong(KEY_DEVICE_TS, System.currentTimeMillis())
+                    .apply();
+        } catch (Exception e) {
+            Log.e(TAG, "saveServerTimestampCache failed", e);
+        }
+    }
+
+    /**
+     * 오프라인 상태에서 추정 서버 시각 반환.
+     * estimatedServerTs = 마지막서버시각 + (현재기기시각 - 마지막기기시각)
+     * 캐시 없으면 null 반환.
+     */
+    public static String getEstimatedServerTimestamp(android.content.Context context) {
+        android.content.SharedPreferences prefs =
+                context.getSharedPreferences(PREFS_TS, android.content.Context.MODE_PRIVATE);
+        long lastServerMs = prefs.getLong(KEY_SERVER_TS, -1);
+        long lastDeviceMs = prefs.getLong(KEY_DEVICE_TS, -1);
+        if (lastServerMs < 0 || lastDeviceMs < 0) return null;
+
+        long elapsed = System.currentTimeMillis() - lastDeviceMs;
+        long estimatedMs = lastServerMs + elapsed;
+        return "[estimated] " + TS_FMT.format(new java.util.Date(estimatedMs));
     }
 
     public interface FileTransferCallback {

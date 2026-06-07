@@ -61,8 +61,17 @@ public class LogService {
 //                .format(FORMATTER);
 //    }
 
-    private static final Pattern TIMESTAMP_PATTERN =
-            Pattern.compile("^(.*?)(?:;\\s*serverTimestamp:\\s*(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}))?$");
+    /**
+     * 그룹:
+     * 1 = 메인 메시지
+     * 2 = [estimated] 접두사 (있으면 추정값)
+     * 3 = serverTimestamp 값
+     * 4 = transmissionTimestamp 값
+     */
+    private static final Pattern TIMESTAMP_PATTERN = Pattern.compile(
+        "^(.*?)(?:;\\s*serverTimestamp:\\s*(\\[estimated\\]\\s*)?(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}))?" +
+        "(?:;\\s*transmissionTimestamp:\\s*(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}))?$"
+    );
 
 
 
@@ -107,16 +116,28 @@ public class LogService {
 
                     Matcher matcher = TIMESTAMP_PATTERN.matcher(content);
                     LocalDateTime serverTimestamp = null;
+                    boolean estimated = false;
+                    LocalDateTime transmissionTimestamp = null;
+
                     if (matcher.matches()) {
                         String mainMessage = matcher.group(1);
-                        String serverTimestampString = matcher.group(2);
-                        if (serverTimestampString != null) {
-                            serverTimestamp = LocalDateTime.parse(serverTimestampString, FORMATTER);
+                        String estimatedPrefix = matcher.group(2);
+                        String serverTsStr = matcher.group(3);
+                        String transmissionTsStr = matcher.group(4);
+
+                        if (serverTsStr != null) {
+                            serverTimestamp = LocalDateTime.parse(serverTsStr, FORMATTER);
+                            estimated = (estimatedPrefix != null);
+                        }
+                        if (transmissionTsStr != null) {
+                            transmissionTimestamp = LocalDateTime.parse(transmissionTsStr, FORMATTER);
                         }
                         content = mainMessage.trim();
                     }
 
                     Message message = new Message(content, deviceTimestamp, serverTimestamp);
+                    message.setEstimatedServerTimestamp(estimated);
+                    message.setTransmissionTimestamp(transmissionTimestamp);
                     messages.add(message);
                 } catch (DateTimeParseException e) {
                     throw new IllegalArgumentException("날짜 형식이 올바르지 않습니다: " + logParts[0] + " " + logParts[1]);
@@ -127,20 +148,23 @@ public class LogService {
                 throw new IllegalArgumentException("유효한 로그 메시지가 없습니다.");
             }
 
-            // reportService 재조합 방식과 동일한 해시 계산
+            // 원본 전송 형식과 동일하게 재조합하여 해시 계산
             StringBuilder reconstructed = new StringBuilder();
             for (Message msg : messages) {
                 reconstructed.append(msg.getDeviceTimestamp().format(FORMATTER))
                         .append(" ")
                         .append(msg.getContent());
                 if (msg.getServerTimestamp() != null) {
-                    reconstructed.append(" ; serverTimestamp: ")
-                            .append(msg.getServerTimestamp().format(FORMATTER));
+                    reconstructed.append(" ; serverTimestamp: ");
+                    if (msg.isEstimatedServerTimestamp()) reconstructed.append("[estimated] ");
+                    reconstructed.append(msg.getServerTimestamp().format(FORMATTER));
+                }
+                if (msg.getTransmissionTimestamp() != null) {
+                    reconstructed.append(" ; transmissionTimestamp: ")
+                            .append(msg.getTransmissionTimestamp().format(FORMATTER));
                 }
                 reconstructed.append("\n");
             }
-            // calculateFileHash는 lines().joining("\n")으로 trailing newline 없이 계산
-            // reconstructed는 trailing \n 포함 → 동일 방식으로 정규화
             String reconstructedForHash = Arrays.stream(reconstructed.toString().split("\\r?\\n"))
                     .collect(Collectors.joining("\n"));
             String reconstructedHash = hashService.calculateMessageHash(reconstructedForHash);
@@ -212,23 +236,32 @@ public class LogService {
                     LocalDateTime deviceTimestamp = LocalDateTime.parse(dateTimeString, FORMATTER);
                     String content = logParts[2];
 
-                    // 괄호로 된 서버 타임스탬프가 포함된 경우 추출
                     Matcher matcher = TIMESTAMP_PATTERN.matcher(content);
                     LocalDateTime serverTimestamp = null;
+                    boolean estimated = false;
+                    LocalDateTime transmissionTimestamp = null;
+
                     if (matcher.matches()) {
                         String mainMessage = matcher.group(1);
-                        String serverTimestampString = matcher.group(2);
-                        if (serverTimestampString != null) {
-                            serverTimestamp = LocalDateTime.parse(serverTimestampString, FORMATTER);
+                        String estimatedPrefix = matcher.group(2);
+                        String serverTsStr = matcher.group(3);
+                        String transmissionTsStr = matcher.group(4);
+
+                        if (serverTsStr != null) {
+                            serverTimestamp = LocalDateTime.parse(serverTsStr, FORMATTER);
+                            estimated = (estimatedPrefix != null);
                         }
-                        content = mainMessage.trim();  // 메시지에서 타임스탬프 제거
+                        if (transmissionTsStr != null) {
+                            transmissionTimestamp = LocalDateTime.parse(transmissionTsStr, FORMATTER);
+                        }
+                        content = mainMessage.trim();
                     }
 
-                    // Message 객체 생성
                     Message message = new Message(content, deviceTimestamp, serverTimestamp);
+                    message.setEstimatedServerTimestamp(estimated);
+                    message.setTransmissionTimestamp(transmissionTimestamp);
                     messages.add(message);
 
-                    // 가장 빠른 생성시간 기록
                     if (earliestCreatedAt == null || deviceTimestamp.isBefore(earliestCreatedAt)) {
                         earliestCreatedAt = deviceTimestamp;
                     }

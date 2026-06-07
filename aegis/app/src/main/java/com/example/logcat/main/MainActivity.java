@@ -163,10 +163,10 @@ public class MainActivity extends AppCompatActivity {
     private void startServices() {
         startMonitoringService();
         startCallLoggingService();
-        startMessageLoggingService();
         startBluetoothLoggingService();
         startRunningManager();
         startFileLoggingService();
+        startMessageLoggingService();
     }
 
     private void startMonitoringService() {
@@ -182,9 +182,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startMessageLoggingService() {
-        Intent serviceIntent = new Intent(this, MessageLogger.class);
-        startService(serviceIntent);
-        Log.d(TAG, "✅ MessageLoggingService started.");
+        Intent intent = new Intent(this, MessageLogger.class);
+        startService(intent);
+        Log.d(TAG, "✅ MessageLoggingService started");
     }
 
     private void startBluetoothLoggingService() {

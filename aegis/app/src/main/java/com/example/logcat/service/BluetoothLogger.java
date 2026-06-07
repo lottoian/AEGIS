@@ -163,17 +163,24 @@ public class BluetoothLogger extends Service {
 
     private void logSMSDetails(String message) throws IOException, NoSuchAlgorithmException {
         String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
-        serverTimestamp = ServerTransmitter.getServerTimestamp();
-        String messageForHash = timestamp + message + " ; serverTimestamp: " + serverTimestamp +"\n";
+        serverTimestamp = LogHandler.resolveServerTimestamp(this);
+        String fullMessage = timestamp + message + " ; serverTimestamp: " + serverTimestamp;
 
-        logHandler.appendToLogFile(messageForHash);
-        Path logFilePath = logHandler.getLogFilePath();
+        logHandler.appendToLogFile(fullMessage + "\n");
+        String chainHash = logHandler.getCurrentChainHash();
+        String deviceId = LogHandler.getAndroidID(this, getContentResolver());
 
-        String hash = hashGenerator.generateSHA256HashFromFile(logFilePath);
-        logHandler.updateHashFile(hash);
-
-        String fileName = logHandler.getFilename();
-        logHandler.checkFileSizeAndHandle(fileName);
+        serverTransmitter.sendLogAsync(deviceId, "BluetoothLog", fullMessage, chainHash,
+            new ServerTransmitter.FileTransferCallback() {
+                @Override
+                public void onSuccess() {
+                    logHandler.clearLogFile();
+                }
+                @Override
+                public void onFailure() {
+                    // 오프라인 큐 적재됨, .txt 유지
+                }
+            });
     }
 
     private void stopBluetoothMonitoring() {

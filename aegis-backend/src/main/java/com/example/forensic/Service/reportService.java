@@ -83,8 +83,13 @@ public class reportService {
                             .append(msg.getContent());
 
                     if (msg.getServerTimestamp() != null) {
-                        logsContent.append(" ; serverTimestamp: ")
-                                .append(msg.getServerTimestamp().format(FORMATTER));
+                        logsContent.append(" ; serverTimestamp: ");
+                        if (msg.isEstimatedServerTimestamp()) logsContent.append("[estimated] ");
+                        logsContent.append(msg.getServerTimestamp().format(FORMATTER));
+                    }
+                    if (msg.getTransmissionTimestamp() != null) {
+                        logsContent.append(" ; transmissionTimestamp: ")
+                                .append(msg.getTransmissionTimestamp().format(FORMATTER));
                     }
 
                     logsContent.append("\n");
@@ -251,13 +256,13 @@ public class reportService {
             // Reconstructing Timeline Section
             document.add(new Paragraph("\nReconstructing Timeline").setBold().setFontSize(16).setMarginTop(30).setMarginBottom(10));
 
-            // Reconstructing Timeline 테이블 컬럼 너비: DeviceTimestamp 컬럼을 좀 더 넓게
-            float[] timelineColumnWidths = {3.5f, 5, 4.5f};
+            // Reconstructing Timeline 테이블 컬럼 너비
+            float[] timelineColumnWidths = {3f, 5f, 3f, 3f};
 
             Table timelineTable = new Table(UnitValue.createPercentArray(timelineColumnWidths))
                     .useAllAvailableWidth();
 
-            String[] timelineHeaders = {"Device Timestamp", "Message", "Estimated Time Value"};
+            String[] timelineHeaders = {"Device Timestamp", "Message", "Server Timestamp", "Transmission Timestamp"};
             for (String header : timelineHeaders) {
                 Cell cell = new Cell().add(new Paragraph(header)
                                 .setBold()
@@ -277,28 +282,31 @@ public class reportService {
                     .collect(Collectors.toList());
 
             for (MessageWrapper wrapper : allMessagesSorted) {
-
                 Message msg = wrapper.message;
                 Color bgColor = logTypeColors.getOrDefault(wrapper.logType, new DeviceGray(0.85f));
 
                 timelineTable.addCell(new Cell().add(new Paragraph(msg.getDeviceTimestamp().format(FORMATTER)))
-                        .setBackgroundColor(bgColor)
-                        .setPadding(5));
+                        .setBackgroundColor(bgColor).setPadding(5));
 
-                // 메시지 내용을 70자마다 줄바꿈 적용
                 String wrappedContent = wrapTextEveryNChars(msg.getContent(), 65);
                 timelineTable.addCell(new Cell().add(new Paragraph(wrappedContent))
-                        .setBackgroundColor(bgColor)
-                        .setPadding(5));
+                        .setBackgroundColor(bgColor).setPadding(5));
 
+                // Server Timestamp (추정값이면 [estimated] 표기)
+                String serverTsStr = "N/A";
+                if (msg.getServerTimestamp() != null) {
+                    serverTsStr = (msg.isEstimatedServerTimestamp() ? "[estimated]\n" : "")
+                            + msg.getServerTimestamp().format(FORMATTER);
+                }
+                timelineTable.addCell(new Cell().add(new Paragraph(serverTsStr).setFontSize(9))
+                        .setBackgroundColor(bgColor).setPadding(5));
 
-                // 2-3. Estimated Time Value 셀
-                String estimatedTimeStr = calculateEstimatedTimestamp(msg.getServerTimestamp(), msg.getDeviceTimestamp());
-
-                Paragraph estimatedPara = new Paragraph(msg.getDeviceTimestamp().format(FORMATTER) + " -> " + estimatedTimeStr)
-                        .setFontSize(10);
-
-                timelineTable.addCell(new Cell().add(estimatedPara).setPadding(5).setBackgroundColor(bgColor));
+                // Transmission Timestamp (오프라인→온라인 플러시 시각)
+                String transmissionTsStr = msg.getTransmissionTimestamp() != null
+                        ? msg.getTransmissionTimestamp().format(FORMATTER)
+                        : "-";
+                timelineTable.addCell(new Cell().add(new Paragraph(transmissionTsStr).setFontSize(9))
+                        .setBackgroundColor(bgColor).setPadding(5));
             }
 
             document.add(timelineTable);

@@ -82,6 +82,21 @@ public class LogHandler {
         return Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID);
     }
 
+    /**
+     * 서버 타임스탬프 획득 공통 유틸.
+     * 온라인 성공 시 → 실제 서버 시각 캐싱 후 반환
+     * 오프라인 실패 시 → 캐시 기반 추정값 반환 ([estimated] 접두사)
+     */
+    public static String resolveServerTimestamp(Context context) {
+        String ts = ServerTransmitter.getServerTimestamp();
+        if (ts != null) {
+            ServerTransmitter.saveServerTimestampCache(context, ts);
+            return ts;
+        }
+        String estimated = ServerTransmitter.getEstimatedServerTimestamp(context);
+        return estimated != null ? estimated : "offline";
+    }
+
     public void initializeLogFile() {
         internalDir = new File(context.getFilesDir(), directoryName);
         if (internalDir.exists()) {
@@ -152,6 +167,48 @@ public class LogHandler {
         return filename;
     }
 
+    public String getCurrentChainHash() {
+        return hashChain.getCurrentHash();
+    }
+
+    /** 온라인 전송 성공 후 .txt 파일을 비운다. 해시 체인은 유지. */
+    public void clearLogFile() {
+        applyWritableToDirectory(internalDir);
+        applyWritable(logFile);
+        try (FileOutputStream fos = new FileOutputStream(logFile, false)) {
+            // 빈 내용으로 덮어씀
+        } catch (IOException e) {
+            Log.e(TAG, "clearLogFile error: " + e.getMessage());
+        } finally {
+            applyReadOnly(logFile);
+            applyReadOnlyToDirectory(internalDir);
+        }
+    }
+
+    /**
+     * WorkManager에서 로거 인스턴스 없이 호출하는 정적 버전.
+     * logType: "AntiForensicLog", "CallingLog" 등 (확장자 없이)
+     */
+    public static void clearLogFileStatic(Context context, String deviceId, String logType) {
+        File dir = new File(context.getFilesDir(), logType);
+        File logFile = new File(dir, deviceId + "_" + logType + ".txt");
+        if (!logFile.exists()) return;
+        if (dir.exists()) {
+            dir.setWritable(true, false);
+            dir.setExecutable(true, false);
+        }
+        logFile.setWritable(true, false);
+        try (FileOutputStream fos = new FileOutputStream(logFile, false)) {
+            // 빈 내용으로 덮어씀
+        } catch (IOException e) {
+            Log.e(TAG, "clearLogFileStatic error: " + e.getMessage());
+        } finally {
+            logFile.setWritable(false, false);
+            if (dir.exists()) dir.setWritable(false, false);
+        }
+        Log.d(TAG, "Cleared .txt after offline flush: " + logType);
+    }
+
     public void updateHashFile(String hash) {
         applyWritableToDirectory(internalDir);
         applyWritable(hashFile);
@@ -175,15 +232,24 @@ public class LogHandler {
     }
 
     private void createNewFile(String fileName, String hashFileName) {
-        applyWritableToDirectory(internalDir);
-        logFile = new File(internalDir, fileName);
-        hashFile = new File(internalDir, hashFileName);
-        createFileIfAbsent(logFile);
-        createFileIfAbsent(hashFile);
-        applyReadOnly(logFile);
-        applyReadOnly(hashFile);
-        applyReadOnlyToDirectory(internalDir);
-        hashChain.reset();
+        // 각 로그 타입의 올바른 디렉터리에 파일 생성 (internalDir이 아닌 파일명 기준)
+        String logName = extractLogName(fileName);
+        File targetDir = new File(internalDir.getParent(), logName);
+        applyWritableToDirectory(targetDir);
+        if (!targetDir.exists()) targetDir.mkdirs();
+        File newLog = new File(targetDir, fileName);
+        File newHash = new File(targetDir, hashFileName);
+        createFileIfAbsent(newLog);
+        createFileIfAbsent(newHash);
+        applyReadOnly(newLog);
+        applyReadOnly(newHash);
+        applyReadOnlyToDirectory(targetDir);
+        // 이 LogHandler가 소유한 파일일 때만 인스턴스 상태 갱신
+        if (fileName.equals(this.filename)) {
+            this.logFile = newLog;
+            this.hashFile = newHash;
+            hashChain.reset();
+        }
     }
 
     /**

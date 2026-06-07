@@ -176,24 +176,29 @@ public class CallingLogger extends Service {
                 : "N/A";
         long durationSeconds = (endTime > 0 && startTime > 0) ? (endTime - startTime) / 1000 : 0;
 
-
-        // 서버에 저장할거면 주석 해제
         String message = " Call Type: " + callType
                 + " Number: " + number
                 + " Start Time: " + startTimeFormatted
                 + " End Time: " + endTimeFormatted
                 + " Duration: " + durationSeconds + " seconds";
-        serverTimestamp = ServerTransmitter.getServerTimestamp();
-        String messageForHash = timestamp + message + " ; serverTimestamp: " + serverTimestamp +"\n";;
+        serverTimestamp = LogHandler.resolveServerTimestamp(this);
+        String fullMessage = timestamp + message + " ; serverTimestamp: " + serverTimestamp;
 
-        logHandler.appendToLogFile(messageForHash);
-        Path logFilePath = logHandler.getLogFilePath();
+        logHandler.appendToLogFile(fullMessage + "\n");
+        String chainHash = logHandler.getCurrentChainHash();
+        String deviceId = LogHandler.getAndroidID(this, getContentResolver());
 
-        String hash = hashGenerator.generateSHA256HashFromFile(logFilePath);
-        logHandler.updateHashFile(hash);
-
-        String fileName = logHandler.getFilename();
-        logHandler.checkFileSizeAndHandle(fileName);
+        serverTransmitter.sendLogAsync(deviceId, "CallingLog", fullMessage, chainHash,
+            new ServerTransmitter.FileTransferCallback() {
+                @Override
+                public void onSuccess() {
+                    logHandler.clearLogFile();
+                }
+                @Override
+                public void onFailure() {
+                    // 오프라인 큐 적재됨, .txt 유지
+                }
+            });
     }
 
 
