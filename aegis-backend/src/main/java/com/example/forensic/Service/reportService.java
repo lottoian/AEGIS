@@ -192,6 +192,18 @@ public class reportService {
                     "AppExecutionLog"
             );
 
+            // server timestamp 오름차순, null 맨 뒤, 동점이면 device timestamp 2차 정렬
+            Comparator<MessageWrapper> timelineComparator = (a, b) -> {
+                LocalDateTime aSrv = a.message.getServerTimestamp();
+                LocalDateTime bSrv = b.message.getServerTimestamp();
+                if (aSrv == null && bSrv == null) return a.message.getDeviceTimestamp().compareTo(b.message.getDeviceTimestamp());
+                if (aSrv == null) return 1;
+                if (bSrv == null) return -1;
+                int cmp = aSrv.compareTo(bSrv);
+                if (cmp != 0) return cmp;
+                return a.message.getDeviceTimestamp().compareTo(b.message.getDeviceTimestamp());
+            };
+
             // 로그 테이블 컬럼 너비 (Event Type, Details, Occurrence)
             float[] columnWidths = {4, 6, 3};
 
@@ -203,7 +215,7 @@ public class reportService {
                         .filter(log -> log.getLogType().equals(logType))
                         .flatMap(log -> log.getMessage().stream()
                                 .map(msg -> new MessageWrapper(log.getLogType(), log.getHash(), msg)))
-                        .sorted(Comparator.comparing(wrapper -> wrapper.message.getDeviceTimestamp()))  // 여기서 디바이스 타임스탬프 기준 정렬
+                        .sorted(timelineComparator)
                         .collect(Collectors.toList());
 
                 List<MessageWrapper> matchedMessages = messages.stream()
@@ -274,11 +286,10 @@ public class reportService {
                 timelineTable.addHeaderCell(cell);
             }
 
-            // 모든 로그 메시지 중 deviceTimestamp 기준 오름차순 정렬
             List<MessageWrapper> allMessagesSorted = logs.stream()
                     .flatMap(log -> log.getMessage().stream()
                             .map(msg -> new MessageWrapper(log.getLogType(), log.getHash(), msg)))
-                    .sorted(Comparator.comparing(wrapper -> wrapper.message.getDeviceTimestamp()))
+                    .sorted(timelineComparator)
                     .collect(Collectors.toList());
 
             for (MessageWrapper wrapper : allMessagesSorted) {
