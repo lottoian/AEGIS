@@ -81,6 +81,9 @@ public class UploadQueueWorker extends Worker {
             }
         }
 
+        // 큐 플러시 후, 오프라인 중 .txt에 쌓인 내용도 전송 (트리거 미발생 분)
+        LogHandler.sendAllPendingTxt(ctx, transmitter);
+
         return anyFailed ? Result.retry() : Result.success();
     }
 

