@@ -150,6 +150,11 @@ public class LogHandler {
             String newChainHash = hashChain.advance(message);
             updateHashFile(newChainHash);
 
+            // 4. 오프라인 상태면 WorkManager 플러시 예약 (온라인 복구 시 .txt 전송)
+            if (!ServerTransmitter.isNetworkAvailable(context)) {
+                UploadQueueWorker.scheduleFlush(context);
+            }
+
             Log.d(TAG, "Logged & chained: " + directoryName);
         } catch (IOException e) {
             Log.e(TAG, "appendToLogFile error: " + e.getMessage());
