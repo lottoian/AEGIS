@@ -169,6 +169,12 @@ public class LogService {
                     .collect(Collectors.joining("\n"));
             String reconstructedHash = hashService.calculateMessageHash(reconstructedForHash);
 
+            // 중복 저장 방지: 동일한 deviceId + logType + hash가 이미 DB에 존재하면 건너뜀
+            if (logRepository.existsByDeviceIdAndLogTypeAndHash(deviceId, logType, reconstructedHash)) {
+                System.out.println("중복 로그 감지, 저장 생략: " + deviceId + ", " + logType + ", hash=" + reconstructedHash);
+                return "DUPLICATE";
+            }
+
             Log log = new Log(deviceId, messages, logType, reconstructedHash);
             logRepository.save(log);
 
@@ -275,7 +281,13 @@ public class LogService {
                 throw new IllegalArgumentException("유효한 로그 메시지가 없습니다.");
             }
 
-// 6. Log 객체 생성 및 저장
+// 6. 중복 저장 방지: 동일한 deviceId + logType + hash가 이미 DB에 존재하면 건너뜀
+            if (logRepository.existsByDeviceIdAndLogTypeAndHash(deviceId, logType, logFileHash)) {
+                System.out.println("중복 로그 감지, 저장 생략: " + deviceId + ", " + logType + ", hash=" + logFileHash);
+                return null;
+            }
+
+// 7. Log 객체 생성 및 저장
             Log log = new Log(deviceId, messages, logType, logFileHash);
             logRepository.save(log);
 

@@ -72,28 +72,28 @@ public class reportService {
 
         for (Map.Entry<String, List<Log>> entry : groupedLogs.entrySet()) {
             String expectedHash = entry.getKey();
-            List<Log> logGroup = entry.getValue();
+            // 같은 hash를 가진 Log가 중복 업로드되어 여러 개 존재할 수 있으므로
+            // 첫 번째 Log 하나만 사용하여 메시지가 2배로 집계되는 것을 방지
+            Log representativeLog = entry.getValue().get(0);
 
             StringBuilder logsContent = new StringBuilder();
 
-            for (Log log : logGroup) {
-                for (Message msg : log.getMessage()) {
-                    logsContent.append(msg.getDeviceTimestamp().format(FORMATTER))
-                            .append(" ")
-                            .append(msg.getContent());
+            for (Message msg : representativeLog.getMessage()) {
+                logsContent.append(msg.getDeviceTimestamp().format(FORMATTER))
+                        .append(" ")
+                        .append(msg.getContent());
 
-                    if (msg.getServerTimestamp() != null) {
-                        logsContent.append(" ; serverTimestamp: ");
-                        if (msg.isEstimatedServerTimestamp()) logsContent.append("[estimated] ");
-                        logsContent.append(msg.getServerTimestamp().format(FORMATTER));
-                    }
-                    if (msg.getTransmissionTimestamp() != null) {
-                        logsContent.append(" ; transmissionTimestamp: ")
-                                .append(msg.getTransmissionTimestamp().format(FORMATTER));
-                    }
-
-                    logsContent.append("\n");
+                if (msg.getServerTimestamp() != null) {
+                    logsContent.append(" ; serverTimestamp: ");
+                    if (msg.isEstimatedServerTimestamp()) logsContent.append("[estimated] ");
+                    logsContent.append(msg.getServerTimestamp().format(FORMATTER));
                 }
+                if (msg.getTransmissionTimestamp() != null) {
+                    logsContent.append(" ; transmissionTimestamp: ")
+                            .append(msg.getTransmissionTimestamp().format(FORMATTER));
+                }
+
+                logsContent.append("\n");
             }
 
             String logFileName = "logs_" + expectedHash + ".txt";

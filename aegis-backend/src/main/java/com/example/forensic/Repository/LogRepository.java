@@ -52,6 +52,14 @@ public class LogRepository {
                 .collect(java.util.stream.Collectors.toList());
     }
 
+    public boolean existsByDeviceIdAndLogTypeAndHash(String deviceId, String logType, String hash) {
+        Query query = new Query();
+        query.addCriteria(Criteria.where("deviceId").is(deviceId)
+                .and("logType").is(logType)
+                .and("hash").is(hash));
+        return mongoTemplate.exists(query, Log.class);
+    }
+
     public List<Log> findAll() {
         return mongoTemplate.findAll(Log.class);
     }
