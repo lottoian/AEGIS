@@ -13,3 +13,15 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# 포렌식 보고서 및 테스트 데이터
+*.pdf
+report/
+reports/
+test_payloads/
+local.properties
+*.db
+*.db-shm
+*.db-wal
+*.der
+.env
