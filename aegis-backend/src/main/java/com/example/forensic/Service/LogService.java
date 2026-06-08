@@ -50,6 +50,9 @@ public class LogService {
     @Autowired
     private reportService reportService;
 
+    @Autowired
+    private com.example.forensic.config.FieldEncryptionConverter fieldEncryptionConverter;
+
 
 //    private static final ZoneId KST_ZONE = ZoneId.of("Asia/Seoul");
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -75,6 +78,28 @@ public class LogService {
 
 
 
+
+    private void encryptMessages(List<Message> messages) {
+        if (messages == null) return;
+        for (Message msg : messages) {
+            if (msg.getContent() != null) {
+                msg.setContent(fieldEncryptionConverter.encrypt(msg.getContent()));
+            }
+        }
+    }
+
+    private void decryptMessages(List<Message> messages) {
+        if (messages == null) return;
+        for (Message msg : messages) {
+            if (msg.getContent() != null) {
+                msg.setContent(fieldEncryptionConverter.decrypt(msg.getContent()));
+            }
+        }
+    }
+
+    private void decryptLogs(List<Log> logs) {
+        for (Log log : logs) decryptMessages(log.getMessage());
+    }
 
     public String appendDecryptedLog(String deviceId, String logType, String decryptedLogContent, MultipartFile hashFile) {
         try {
@@ -175,10 +200,11 @@ public class LogService {
                 return "DUPLICATE";
             }
 
+            encryptMessages(messages);
             Log log = new Log(deviceId, messages, logType, reconstructedHash);
             logRepository.save(log);
 
-            System.out.println("로그 저장 완료: " + deviceId + ", " + logType);
+            System.out.println("로그 저장 완료 (암호화): " + deviceId + ", " + logType);
             return "SUCCESS";
         } catch (Exception e) {
             e.printStackTrace();
@@ -288,10 +314,11 @@ public class LogService {
             }
 
 // 7. Log 객체 생성 및 저장
+            encryptMessages(messages);
             Log log = new Log(deviceId, messages, logType, logFileHash);
             logRepository.save(log);
 
-            System.out.println("로그 저장 완료: " + deviceId + ", " + logType);
+            System.out.println("로그 저장 완료 (암호화): " + deviceId + ", " + logType);
 
 
         } catch (Exception e) {
@@ -303,6 +330,7 @@ public class LogService {
 
     public String analyzeLog(String deviceId, LocalDateTime startTime, LocalDateTime endTime) throws Exception {
         List<Log> logs = logRepository.findLogsWithinDuration(deviceId, startTime, endTime);
+        decryptLogs(logs);
         logs.sort(Comparator.comparing(Log::getCreatedAt));
         return reportService.generateReport(deviceId, logs, startTime, endTime);
     }
@@ -311,6 +339,7 @@ public class LogService {
 
     public String readLog(String deviceId, String logType) {
         List<Log> logs = logRepository.findByDeviceIdAndLogType(deviceId, logType);
+        decryptLogs(logs);
         return logs.toString();
     }
 
