@@ -47,21 +47,11 @@ public class ServerTransmitter {
     private static final String TAG = "ServerTransmitter";
     private static final String BASE_URL = "http://220.149.236.152:8888";
 
-    /**
-     * 오프라인 큐 최대 허용 용량 (기본 50MB).
-     * 기업·기관 정책에 따라 이 값을 조정하여 내부 저장소 점유 상한을 설정할 수 있다.
-     * 초과 시 가장 오래된 항목부터 순차적으로 삭제된다 (FIFO eviction).
-     */
     public static final long MAX_OFFLINE_QUEUE_BYTES = 50L * 1024 * 1024; // 50 MB
     private static final String UPLOAD_PATH = "/logs/upload";
     private static final String TIMESTAMP_PATH = "/logs/timestamp";
     private static final String SERVERKEY_PATH = "/logs/serverkey";
 
-    /**
-     * 서버 인증서 SPKI SHA-256 핀 (실제 배포 시 certutil / openssl로 추출한 값 사용).
-     * 형식: "sha256/Base64EncodedSPKIHash=="
-     * 백업 핀 1개 필수 (인증서 갱신 대비).
-     */
     private static final String SPKI_PIN_PRIMARY = "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     private static final String SPKI_PIN_BACKUP  = "sha256/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
 
@@ -70,9 +60,12 @@ public class ServerTransmitter {
     private volatile ClientCryptoPipeline cryptoPipeline;
     private volatile byte[] cachedServerPublicKey;
 
-    // 연속 업로드 실패 횟수 — 임계치 초과 시 커넥션 풀 초기화
     private int consecutiveFailures = 0;
     private static final int FAILURE_THRESHOLD = 3;
+
+    // key fetch 실패 후 재시도 대기 (30초)
+    private long lastKeyFetchFailedAt = 0;
+    private static final long KEY_FETCH_RETRY_INTERVAL_MS = 30_000;
 
     public ServerTransmitter(Context context) {
         this.context = context;
@@ -86,18 +79,18 @@ public class ServerTransmitter {
         if (httpClient != null) return httpClient;
         try {
             if (BASE_URL.startsWith("http://")) {
+                Log.d(TAG, "[HTTP] 클라이언트 초기화 (평문 HTTP, 개발 모드)");
                 httpClient = new OkHttpClient.Builder()
                         .connectTimeout(10, TimeUnit.SECONDS)
                         .readTimeout(20, TimeUnit.SECONDS)
                         .writeTimeout(20, TimeUnit.SECONDS)
-                        // stale 연결 재사용 방지: 풀 크기 1, 30초 유효
                         .connectionPool(new ConnectionPool(1, 30, TimeUnit.SECONDS))
                         .retryOnConnectionFailure(true)
                         .build();
                 return httpClient;
             }
 
-            // 클라이언트 인증서 키스토어 로드 (Android Keystore)
+            Log.d(TAG, "[HTTP] mTLS 클라이언트 초기화 시작");
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
             keyStore.load(null);
 
@@ -105,7 +98,6 @@ public class ServerTransmitter {
                     KeyManagerFactory.getDefaultAlgorithm());
             kmf.init(keyStore, null);
 
-            // 시스템 신뢰 저장소
             TrustManagerFactory tmf = TrustManagerFactory.getInstance(
                     TrustManagerFactory.getDefaultAlgorithm());
             tmf.init((KeyStore) null);
@@ -116,7 +108,6 @@ public class ServerTransmitter {
 
             X509TrustManager trustManager = (X509TrustManager) trustManagers[0];
 
-            // SPKI 핀닝 (주 핀 + 백업 핀)
             CertificatePinner pinner = new CertificatePinner.Builder()
                     .add("220.149.236.152", SPKI_PIN_PRIMARY)
                     .add("220.149.236.152", SPKI_PIN_BACKUP)
@@ -130,9 +121,10 @@ public class ServerTransmitter {
                     .writeTimeout(30, TimeUnit.SECONDS)
                     .build();
 
+            Log.d(TAG, "[HTTP] mTLS 클라이언트 초기화 완료");
             return httpClient;
         } catch (Exception e) {
-            Log.e(TAG, "OkHttp init failed", e);
+            Log.e(TAG, "[HTTP] 클라이언트 초기화 실패", e);
             throw new RuntimeException("HTTP client init failed", e);
         }
     }
@@ -141,28 +133,36 @@ public class ServerTransmitter {
     // 서버 공개키 획득 및 CryptoPipeline 초기화
     // ──────────────────────────────────────────────
 
-    // key fetch 실패 후 재시도 대기 (30초) — 동시 다수 스레드가 줄 서서 타임아웃 반복 방지
-    private long lastKeyFetchFailedAt = 0;
-    private static final long KEY_FETCH_RETRY_INTERVAL_MS = 30_000;
-
     private synchronized ClientCryptoPipeline getCryptoPipeline() {
-        if (cryptoPipeline != null) return cryptoPipeline;
-        // 최근 실패 후 재시도 대기 중이면 즉시 null 반환
-        if (lastKeyFetchFailedAt > 0
-                && (System.currentTimeMillis() - lastKeyFetchFailedAt) < KEY_FETCH_RETRY_INTERVAL_MS) {
-            Log.d(TAG, "CryptoPipeline: key fetch 재시도 대기 중, 오프라인 큐로 전환");
+        if (cryptoPipeline != null) {
+            Log.d(TAG, "[CRYPTO] 파이프라인 캐시 사용");
+            return cryptoPipeline;
+        }
+
+        long now = System.currentTimeMillis();
+        long elapsed = now - lastKeyFetchFailedAt;
+        if (lastKeyFetchFailedAt > 0 && elapsed < KEY_FETCH_RETRY_INTERVAL_MS) {
+            Log.w(TAG, "[CRYPTO] serverkey 재시도 대기 중 (남은 시간: "
+                    + (KEY_FETCH_RETRY_INTERVAL_MS - elapsed) / 1000 + "초) → 오프라인 큐로 전환");
             return null;
         }
+
         try {
+            Log.d(TAG, "[CRYPTO] 파이프라인 초기화 시작"
+                    + (cachedServerPublicKey != null ? " (서버키 캐시 있음)" : " (서버키 fetch 필요)"));
+            long t0 = System.currentTimeMillis();
             byte[] serverKey = fetchServerPublicKey();
+            Log.d(TAG, "[CRYPTO] 서버키 획득 완료 (" + (System.currentTimeMillis() - t0) + "ms)");
+
             String deviceId = LogHandler.getAndroidID(context, context.getContentResolver());
             cryptoPipeline = new ClientCryptoPipeline(serverKey, deviceId);
             lastKeyFetchFailedAt = 0;
+            Log.d(TAG, "[CRYPTO] 파이프라인 초기화 완료 (deviceId=" + deviceId + ")");
             return cryptoPipeline;
         } catch (Exception e) {
-            Log.w(TAG, "CryptoPipeline init failed (서버 불안정): " + e.getMessage());
-            // cachedServerPublicKey 유지 — 이미 캐시된 키가 있으면 다음 시도에서 재사용
-            // 키 fetch 자체가 실패한 경우만 null (fetchServerPublicKey 내부에서 처리)
+            Log.e(TAG, "[CRYPTO] 파이프라인 초기화 실패 — 원인: " + e.getClass().getSimpleName()
+                    + ": " + e.getMessage()
+                    + (cachedServerPublicKey != null ? " (서버키 캐시 유지)" : " (서버키 없음)"));
             cryptoPipeline = null;
             lastKeyFetchFailedAt = System.currentTimeMillis();
             return null;
@@ -170,8 +170,12 @@ public class ServerTransmitter {
     }
 
     private byte[] fetchServerPublicKey() throws Exception {
-        if (cachedServerPublicKey != null) return cachedServerPublicKey;
-        // serverkey 전용 짧은 타임아웃 클라이언트 (5초) — 메인 업로드 타임아웃과 분리
+        if (cachedServerPublicKey != null) {
+            Log.d(TAG, "[SERVERKEY] 캐시된 서버 공개키 사용 (재요청 없음)");
+            return cachedServerPublicKey;
+        }
+        Log.d(TAG, "[SERVERKEY] 서버에서 공개키 요청: " + BASE_URL + SERVERKEY_PATH);
+        long t0 = System.currentTimeMillis();
         OkHttpClient keyClient = getHttpClient().newBuilder()
                 .connectTimeout(5, TimeUnit.SECONDS)
                 .readTimeout(5, TimeUnit.SECONDS)
@@ -181,11 +185,14 @@ public class ServerTransmitter {
                 .get()
                 .build();
         try (Response resp = keyClient.newCall(req).execute()) {
+            long elapsed = System.currentTimeMillis() - t0;
             if (!resp.isSuccessful() || resp.body() == null) {
+                Log.e(TAG, "[SERVERKEY] 응답 실패: HTTP " + resp.code() + " (" + elapsed + "ms)");
                 throw new RuntimeException("Server key fetch failed: " + resp.code());
             }
             String b64 = resp.body().string().trim();
             cachedServerPublicKey = Base64.decode(b64, Base64.NO_WRAP);
+            Log.d(TAG, "[SERVERKEY] 공개키 수신 성공 (" + elapsed + "ms, " + cachedServerPublicKey.length + "bytes)");
             return cachedServerPublicKey;
         }
     }
@@ -194,23 +201,22 @@ public class ServerTransmitter {
     // 핵심 업로드 메서드
     // ──────────────────────────────────────────────
 
-    /**
-     * 로그 내용을 암호화하여 서버로 업로드.
-     * 실패 시 SQLCipher 오프라인 큐에 저장하고 WorkManager 재시도 예약.
-     */
     public void sendLogAsync(String deviceId, String logType,
                               String logContent, String chainHash,
                               FileTransferCallback callback) {
+        Log.d(TAG, "[ASYNC] 비동기 전송 시작: " + logType + " (contentLen=" + logContent.length() + ")");
         new Thread(() -> {
             boolean success = false;
             try {
                 success = uploadEncryptedLog(deviceId, logType, logContent, chainHash);
             } catch (Exception e) {
-                Log.e(TAG, "Upload error, queuing offline", e);
+                Log.e(TAG, "[ASYNC] 예외 발생, 오프라인 큐로 전환: " + logType, e);
             }
             if (success) {
+                Log.d(TAG, "[ASYNC] 전송 성공: " + logType);
                 if (callback != null) callback.onSuccess();
             } else {
+                Log.w(TAG, "[ASYNC] 전송 실패, 오프라인 큐 저장: " + logType);
                 queueOffline(deviceId, logType, logContent, chainHash);
                 UploadQueueWorker.scheduleFlush(context);
                 if (callback != null) callback.onFailure();
@@ -218,34 +224,41 @@ public class ServerTransmitter {
         }).start();
     }
 
-    /**
-     * 동기 업로드 (WorkManager Worker에서 호출).
-     * @return 성공 여부
-     */
     public boolean uploadEncryptedLog(String deviceId, String logType,
                                        String logContent, String chainHash) {
         byte[] packetBytes = null;
+        long t0 = System.currentTimeMillis();
+        Log.d(TAG, "[UPLOAD] 시작: type=" + logType
+                + " contentLen=" + logContent.length()
+                + " thread=" + Thread.currentThread().getName());
         try {
+            // 1. CryptoPipeline 획득
             ClientCryptoPipeline pipeline = getCryptoPipeline();
-            if (pipeline == null) return false;
+            if (pipeline == null) {
+                Log.w(TAG, "[UPLOAD] CryptoPipeline 없음 → 오프라인 큐로 전환: " + logType);
+                return false;
+            }
 
-            // 1. 암호화 파이프라인 (GZIP + ECDH + AES-GCM + ECDSA)
+            // 2. 암호화 (GZIP + ECDH + AES-GCM + ECDSA)
+            long encStart = System.currentTimeMillis();
             packetBytes = pipeline.encrypt(logContent);
+            Log.d(TAG, "[UPLOAD] 암호화 완료: " + (System.currentTimeMillis() - encStart) + "ms"
+                    + ", 패킷=" + packetBytes.length + "bytes");
 
-            // 2. 서버가 기대하는 SHA-256(logContent) 계산 (ForwardHashChain H_i와 별개)
+            // 3. SHA-256 해시 계산
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
             byte[] hashBytes = md.digest(logContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();
             for (byte b : hashBytes) sb.append(String.format("%02x", b));
             String contentHash = sb.toString();
+            Log.d(TAG, "[UPLOAD] 해시 계산 완료: " + contentHash.substring(0, 16) + "...");
 
-            // 3. 멀티파트 업로드 (logFile=암호화 패킷, hashFile=SHA-256(content))
+            // 4. 멀티파트 요청 구성
             String filename = deviceId + "_" + logType + ".enc";
             RequestBody logBody = RequestBody.create(packetBytes,
                     MediaType.parse("application/octet-stream"));
             RequestBody hashBody = RequestBody.create(contentHash.getBytes(),
                     MediaType.parse("text/plain"));
-
             RequestBody multipart = new MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("logFile", filename, logBody)
@@ -257,14 +270,26 @@ public class ServerTransmitter {
                     .post(multipart)
                     .build();
 
+            Log.d(TAG, "[UPLOAD] HTTP POST 전송: " + BASE_URL + UPLOAD_PATH + " file=" + filename);
+            long netStart = System.currentTimeMillis();
             try (Response resp = getHttpClient().newCall(req).execute()) {
-                Log.d(TAG, "Upload response: " + resp.code());
+                long netMs = System.currentTimeMillis() - netStart;
                 boolean ok = resp.isSuccessful();
-                if (ok) onUploadSuccess();
+                Log.d(TAG, "[UPLOAD] 응답: HTTP " + resp.code()
+                        + " (" + netMs + "ms) " + logType
+                        + (ok ? " → 성공" : " → 실패"));
+                if (ok) {
+                    onUploadSuccess();
+                    Log.d(TAG, "[UPLOAD] 완료: " + logType + " 총 소요=" + (System.currentTimeMillis() - t0) + "ms");
+                } else {
+                    Log.w(TAG, "[UPLOAD] 서버 거부: HTTP " + resp.code() + " type=" + logType);
+                }
                 return ok;
             }
         } catch (Exception e) {
-            Log.e(TAG, "uploadEncryptedLog failed", e);
+            Log.e(TAG, "[UPLOAD] 실패: type=" + logType
+                    + " 소요=" + (System.currentTimeMillis() - t0) + "ms"
+                    + " 원인=" + e.getClass().getSimpleName() + ": " + e.getMessage());
             onUploadFailure();
             return false;
         } finally {
@@ -274,22 +299,23 @@ public class ServerTransmitter {
 
     private synchronized void onUploadFailure() {
         consecutiveFailures++;
+        Log.w(TAG, "[UPLOAD] 연속 실패 횟수: " + consecutiveFailures + "/" + FAILURE_THRESHOLD);
         if (consecutiveFailures >= FAILURE_THRESHOLD) {
-            // stale 커넥션 강제 제거 후 클라이언트 재생성
-            // cachedServerPublicKey는 유지 — 서버 재시작 없으면 키는 동일하므로
-            // 불필요한 serverkey 재요청 차단
             if (httpClient != null) {
+                int evicted = httpClient.connectionPool().connectionCount();
                 httpClient.connectionPool().evictAll();
                 httpClient = null;
+                Log.w(TAG, "[UPLOAD] 커넥션 풀 초기화 (제거된 연결=" + evicted + ")");
             }
             cryptoPipeline = null;
             consecutiveFailures = 0;
-            Log.w(TAG, "연속 실패 " + FAILURE_THRESHOLD + "회 — 커넥션 풀 및 파이프라인 초기화");
+            Log.w(TAG, "[UPLOAD] 연속 " + FAILURE_THRESHOLD + "회 실패 — 파이프라인 초기화 완료");
         }
     }
 
     private synchronized void onUploadSuccess() {
         if (consecutiveFailures > 0) {
+            Log.d(TAG, "[UPLOAD] 성공으로 연속 실패 카운터 초기화 (이전=" + consecutiveFailures + ")");
             consecutiveFailures = 0;
         }
     }
@@ -298,38 +324,42 @@ public class ServerTransmitter {
     // 오프라인 큐 저장
     // ──────────────────────────────────────────────
 
-    /** 네트워크 연결 여부 확인. */
     public static boolean isNetworkAvailable(Context context) {
         android.net.ConnectivityManager cm = (android.net.ConnectivityManager)
                 context.getSystemService(Context.CONNECTIVITY_SERVICE);
         if (cm == null) return false;
         android.net.NetworkInfo ni = cm.getActiveNetworkInfo();
-        return ni != null && ni.isConnected();
+        boolean connected = ni != null && ni.isConnected();
+        Log.d(TAG, "[NETWORK] 상태=" + (connected ? "온라인" : "오프라인")
+                + (ni != null ? " (" + ni.getTypeName() + ")" : ""));
+        return connected;
     }
 
     public void queueOffline(String deviceId, String logType,
                               String logContent, String chainHash) {
         try {
+            Log.d(TAG, "[QUEUE] 오프라인 큐 저장 시작: " + logType + " (contentLen=" + logContent.length() + ")");
             String encrypted = CryptoManager.getInstance().encryptString(logContent);
             OfflineLogEntity entity = new OfflineLogEntity(deviceId, logType, encrypted, chainHash);
             com.example.logcat.queue.OfflineLogDao dao =
                     OfflineLogDatabase.getInstance(context).offlineLogDao();
             dao.insert(entity);
 
-            // 최대 용량 초과 시 가장 오래된 항목부터 삭제 (FIFO eviction)
+            int count = dao.countPending();
             long totalBytes = dao.totalContentBytes();
+
             if (totalBytes > MAX_OFFLINE_QUEUE_BYTES) {
-                int count = dao.countPending();
-                // 전체 항목의 20%를 삭제하여 빈번한 eviction 방지
                 int toDelete = Math.max(1, count / 5);
                 dao.deleteOldest(toDelete);
-                Log.w(TAG, "Offline queue exceeded " + (MAX_OFFLINE_QUEUE_BYTES / 1024 / 1024)
-                        + "MB — evicted " + toDelete + " oldest entries");
+                Log.w(TAG, "[QUEUE] 용량 초과 ("
+                        + (totalBytes / 1024 / 1024) + "MB/" + (MAX_OFFLINE_QUEUE_BYTES / 1024 / 1024)
+                        + "MB) → 오래된 항목 " + toDelete + "개 삭제");
+            } else {
+                Log.d(TAG, "[QUEUE] 저장 완료: " + logType
+                        + " (큐=" + count + "개, 용량=" + (totalBytes / 1024) + "KB)");
             }
-
-            Log.d(TAG, "Queued offline: " + logType);
         } catch (Exception e) {
-            Log.e(TAG, "Offline queue insert failed", e);
+            Log.e(TAG, "[QUEUE] 저장 실패: " + logType, e);
         }
     }
 
@@ -339,11 +369,12 @@ public class ServerTransmitter {
 
     public void sendFilesAsync(java.io.File logFile, java.io.File hashFile,
                                 FileTransferCallback callback) {
+        Log.d(TAG, "[FILES] 파일 기반 전송 시작: " + logFile.getName());
         new Thread(() -> {
             boolean success = false;
             try {
                 String deviceId = LogHandler.getAndroidID(context, context.getContentResolver());
-                String filename = logFile.getName(); // e.g. deviceId_AntiForensicLog.txt
+                String filename = logFile.getName();
                 String[] parts = filename.split("_", 2);
                 String logType = parts.length > 1 ? parts[1].replace(".txt", "") : "Unknown";
 
@@ -355,22 +386,23 @@ public class ServerTransmitter {
                 Arrays.fill(content, (byte) 0);
                 Arrays.fill(hashContent, (byte) 0);
 
-                // 파일은 at-rest 암호화(CryptoManager AES-GCM)로 저장되어 있으므로 각 줄을 복호화
                 CryptoManager crypto = CryptoManager.getInstance();
                 StringBuilder decrypted = new StringBuilder();
+                int lineCount = 0, failCount = 0;
                 for (String line : rawText.split("\n")) {
                     String trimmed = line.trim();
                     if (trimmed.isEmpty()) continue;
                     try {
                         decrypted.append(crypto.decryptToString(trimmed)).append("\n");
+                        lineCount++;
                     } catch (Exception ex) {
-                        // 복호화 실패 시 원문 유지 (이미 평문인 경우)
                         decrypted.append(trimmed).append("\n");
+                        failCount++;
                     }
                 }
+                Log.d(TAG, "[FILES] 파일 복호화: 성공=" + lineCount + "줄, 평문유지=" + failCount + "줄");
                 String logText = decrypted.toString().trim();
 
-                // BE의 HashService.calculateMessageHash(normalized)와 동일한 방식으로 해시 계산
                 String normalizedContent = String.join("\n",
                     java.util.Arrays.stream(logText.split("\\r?\n"))
                         .collect(java.util.stream.Collectors.toList()));
@@ -382,57 +414,56 @@ public class ServerTransmitter {
 
                 success = uploadEncryptedLog(deviceId, logType, logText, chainHash);
             } catch (Exception e) {
-                Log.e(TAG, "sendFilesAsync error", e);
+                Log.e(TAG, "[FILES] 전송 실패: " + logFile.getName(), e);
             }
             if (success) {
+                Log.d(TAG, "[FILES] 전송 성공: " + logFile.getName());
                 callback.onSuccess();
             } else {
+                Log.w(TAG, "[FILES] 전송 실패: " + logFile.getName());
                 callback.onFailure();
             }
         }).start();
     }
 
     // ──────────────────────────────────────────────
-    // 서버 타임스탬프 (평문 GET, cleartext URL 사용 불가 → HTTPS)
+    // 서버 타임스탬프
     // ──────────────────────────────────────────────
 
     private static final String PREFS_TS = "aegis_ts_cache";
-    private static final String KEY_SERVER_TS = "last_server_ts";        // 마지막 서버 시각 (ms)
-    private static final String KEY_DEVICE_TS = "last_device_ts";        // 그 시점 기기 시각 (ms)
-    private static final String KEY_ELAPSED_REALTIME = "last_elapsed_rt"; // 그 시점 elapsedRealtime (ms)
+    private static final String KEY_SERVER_TS = "last_server_ts";
+    private static final String KEY_DEVICE_TS = "last_device_ts";
+    private static final String KEY_ELAPSED_REALTIME = "last_elapsed_rt";
     private static final java.text.SimpleDateFormat TS_FMT =
             new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault());
 
     private static volatile String inMemoryTs = null;
-    private static volatile long inMemoryLastAttemptAt = 0; // 성공/실패 무관 마지막 시도 시각
-    private static final long TS_CACHE_TTL_MS = 5 * 60_000; // 5분
+    private static volatile long inMemoryLastAttemptAt = 0;
+    private static final long TS_CACHE_TTL_MS = 5 * 60_000;
 
-    /**
-     * 서버 타임스탬프 반환.
-     * - 60초 이내 캐시가 있으면 즉시 반환 (네트워크 요청 없음)
-     * - 캐시 만료 시 서버에서 fetch
-     * - 온라인: 실제 서버 시각 반환 + 캐싱
-     * - 오프라인: null 반환
-     */
     public static String getServerTimestamp() {
         long now = System.currentTimeMillis();
-        // 성공/실패 무관 5분 내 재시도 차단
         if ((now - inMemoryLastAttemptAt) < TS_CACHE_TTL_MS) {
-            return inMemoryTs; // 성공했으면 캐시값, 실패했으면 null
+            Log.d(TAG, "[TIMESTAMP] 캐시 사용: " + inMemoryTs
+                    + " (갱신까지 " + (TS_CACHE_TTL_MS - (now - inMemoryLastAttemptAt)) / 1000 + "초)");
+            return inMemoryTs;
         }
         inMemoryLastAttemptAt = now;
+        Log.d(TAG, "[TIMESTAMP] 서버에서 타임스탬프 fetch 시작");
 
         final String[] result = {null};
         CountDownLatch latch = new CountDownLatch(1);
 
         new Thread(() -> {
+            long t0 = System.currentTimeMillis();
             try {
                 URL url = new URL(BASE_URL + TIMESTAMP_PATH);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
                 conn.setConnectTimeout(5000);
                 conn.setReadTimeout(5000);
-                if (conn.getResponseCode() == HttpURLConnection.HTTP_OK) {
+                int code = conn.getResponseCode();
+                if (code == HttpURLConnection.HTTP_OK) {
                     BufferedReader reader = new BufferedReader(
                             new InputStreamReader(conn.getInputStream()));
                     StringBuilder sb = new StringBuilder();
@@ -440,9 +471,15 @@ public class ServerTransmitter {
                     while ((line = reader.readLine()) != null) sb.append(line);
                     reader.close();
                     result[0] = sb.toString().trim();
+                    Log.d(TAG, "[TIMESTAMP] fetch 성공: " + result[0]
+                            + " (" + (System.currentTimeMillis() - t0) + "ms)");
+                } else {
+                    Log.w(TAG, "[TIMESTAMP] 서버 응답 오류: HTTP " + code
+                            + " (" + (System.currentTimeMillis() - t0) + "ms)");
                 }
             } catch (Exception e) {
-                Log.d(TAG, "getServerTimestamp failed: " + e.getMessage());
+                Log.w(TAG, "[TIMESTAMP] fetch 실패 (" + (System.currentTimeMillis() - t0) + "ms)"
+                        + " 원인=" + e.getClass().getSimpleName() + ": " + e.getMessage());
             } finally {
                 latch.countDown();
             }
@@ -455,17 +492,18 @@ public class ServerTransmitter {
 
         if (result[0] != null) {
             inMemoryTs = result[0];
+        } else {
+            Log.w(TAG, "[TIMESTAMP] 타임스탬프 획득 실패 — null 반환");
         }
         return result[0];
     }
 
-    /** 온/오프라인 전환 시 인메모리 캐시 무효화 (다음 호출에서 서버 재fetch). */
     public static void invalidateTimestampCache() {
+        Log.d(TAG, "[TIMESTAMP] 캐시 무효화 (네트워크 전환 감지)");
         inMemoryTs = null;
         inMemoryLastAttemptAt = 0;
     }
 
-    /** 온라인 성공 시 (서버시각, 기기시각) 쌍 캐싱. */
     public static void saveServerTimestampCache(android.content.Context context, String serverTs) {
         try {
             long serverMs = TS_FMT.parse(serverTs).getTime();
@@ -476,41 +514,40 @@ public class ServerTransmitter {
                     .putLong(KEY_DEVICE_TS, System.currentTimeMillis())
                     .putLong(KEY_ELAPSED_REALTIME, android.os.SystemClock.elapsedRealtime())
                     .apply();
+            Log.d(TAG, "[TIMESTAMP] SharedPreferences 캐시 저장: " + serverTs);
         } catch (Exception e) {
-            Log.e(TAG, "saveServerTimestampCache failed", e);
+            Log.e(TAG, "[TIMESTAMP] 캐시 저장 실패", e);
         }
     }
 
-    /**
-     * 오프라인 상태에서 추정 서버 시각 반환.
-     * estimatedServerTs = 마지막서버시각 + (현재기기시각 - 마지막기기시각)
-     * 캐시 없으면 null 반환.
-     */
     public static String getEstimatedServerTimestamp(android.content.Context context) {
         android.content.SharedPreferences prefs =
                 context.getSharedPreferences(PREFS_TS, android.content.Context.MODE_PRIVATE);
         long lastServerMs = prefs.getLong(KEY_SERVER_TS, -1);
         long lastElapsedRt = prefs.getLong(KEY_ELAPSED_REALTIME, -1);
-        if (lastServerMs < 0) return null;
+        if (lastServerMs < 0) {
+            Log.w(TAG, "[TIMESTAMP] 추정 타임스탬프: 캐시 없음 → null 반환");
+            return null;
+        }
 
-        // elapsedRealtime 캐시 없음 → 구버전 APK 데이터, last-known 반환
         if (lastElapsedRt < 0) {
-            Log.w(TAG, "getEstimatedServerTimestamp: elapsedRealtime 캐시 없음 → [last-known]");
+            Log.w(TAG, "[TIMESTAMP] 추정 타임스탬프: elapsedRealtime 캐시 없음 → [last-known]");
             return "[last-known] " + TS_FMT.format(new java.util.Date(lastServerMs));
         }
 
         long currentElapsedRt = android.os.SystemClock.elapsedRealtime();
 
-        // 재부팅 감지: 현재 elapsedRealtime이 캐시보다 작으면 재부팅된 것
         if (currentElapsedRt < lastElapsedRt) {
-            Log.w(TAG, "getEstimatedServerTimestamp: 재부팅 감지 → [last-known]");
+            Log.w(TAG, "[TIMESTAMP] 재부팅 감지 (현재elapsedRt=" + currentElapsedRt
+                    + " < 캐시=" + lastElapsedRt + ") → [last-known]");
             return "[last-known] " + TS_FMT.format(new java.util.Date(lastServerMs));
         }
 
         long elapsedMs = currentElapsedRt - lastElapsedRt;
         long estimatedMs = lastServerMs + elapsedMs;
-        Log.d(TAG, "getEstimatedServerTimestamp: elapsedMs=" + elapsedMs + "ms → " + TS_FMT.format(new java.util.Date(estimatedMs)));
-        return "[estimated] " + TS_FMT.format(new java.util.Date(estimatedMs));
+        String estimated = "[estimated] " + TS_FMT.format(new java.util.Date(estimatedMs));
+        Log.d(TAG, "[TIMESTAMP] 추정 타임스탬프: elapsedMs=" + elapsedMs + "ms → " + estimated);
+        return estimated;
     }
 
     public interface FileTransferCallback {

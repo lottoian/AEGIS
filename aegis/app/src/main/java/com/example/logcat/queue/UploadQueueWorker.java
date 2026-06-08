@@ -42,20 +42,38 @@ public class UploadQueueWorker extends Worker {
         ServerTransmitter transmitter = new ServerTransmitter(ctx);
 
         List<OfflineLogEntity> pending = dao.getAllPending();
-        Log.d(TAG, "[FLUSH START] 네트워크 복구 감지 — 큐 항목: " + pending.size() + "개");
+        long totalBytes = dao.totalContentBytes();
+        int runAttempt = getRunAttemptCount();
+
+        Log.d(TAG, "══════════════════════════════════════");
+        Log.d(TAG, "[FLUSH START] 실행 시작"
+                + " | 큐=" + pending.size() + "개"
+                + " | 용량=" + (totalBytes / 1024) + "KB"
+                + " | 재시도=" + runAttempt + "회차");
+        Log.d(TAG, "══════════════════════════════════════");
 
         boolean anyFailed = false;
+        int successCount = 0, failCount = 0, skipCount = 0;
 
         for (OfflineLogEntity entry : pending) {
             if (entry.retryCount >= MAX_RETRIES) {
-                Log.w(TAG, "[FLUSH] MAX_RETRIES 초과, 삭제: id=" + entry.id + " type=" + entry.logType);
+                Log.w(TAG, "[FLUSH] MAX_RETRIES(" + MAX_RETRIES + ") 초과 → 삭제:"
+                        + " id=" + entry.id + " type=" + entry.logType
+                        + " retry=" + entry.retryCount);
                 dao.deleteById(entry.id);
+                skipCount++;
                 continue;
             }
+
+            Log.d(TAG, "[FLUSH] 전송 시도: id=" + entry.id
+                    + " type=" + entry.logType
+                    + " retry=" + entry.retryCount + "/" + MAX_RETRIES);
+
             try {
-                Log.d(TAG, "[FLUSH] 큐 항목 전송 시도: id=" + entry.id + " type=" + entry.logType + " retry=" + entry.retryCount);
+                long decStart = System.currentTimeMillis();
                 String logContent = cm.decryptToString(entry.encryptedLogContent);
-                Log.d(TAG, "[FLUSH] 복호화 성공, 길이=" + logContent.length());
+                Log.d(TAG, "[FLUSH] 복호화 완료: " + (System.currentTimeMillis() - decStart) + "ms"
+                        + " contentLen=" + logContent.length());
 
                 String transmissionTs = ServerTransmitter.getServerTimestamp();
                 if (transmissionTs != null) {
@@ -63,7 +81,7 @@ public class UploadQueueWorker extends Worker {
                     logContent = logContent + " ; transmissionTimestamp: " + transmissionTs;
                     Log.d(TAG, "[FLUSH] transmissionTimestamp 추가: " + transmissionTs);
                 } else {
-                    Log.w(TAG, "[FLUSH] transmissionTimestamp 획득 실패 (서버 미응답)");
+                    Log.w(TAG, "[FLUSH] transmissionTimestamp 획득 실패 — 타임스탬프 없이 전송");
                 }
 
                 boolean success = transmitter.uploadEncryptedLog(
@@ -72,29 +90,46 @@ public class UploadQueueWorker extends Worker {
                 if (success) {
                     dao.deleteById(entry.id);
                     LogHandler.clearLogFileStatic(ctx, entry.deviceId, entry.logType);
-                    Log.d(TAG, "[FLUSH] 전송 성공: id=" + entry.id + " type=" + entry.logType);
+                    successCount++;
+                    Log.d(TAG, "[FLUSH] 전송 성공 → DB에서 삭제: id=" + entry.id + " type=" + entry.logType);
                 } else {
                     dao.incrementRetry(entry.id);
                     anyFailed = true;
-                    Log.w(TAG, "[FLUSH] 전송 실패: id=" + entry.id + " retry=" + (entry.retryCount + 1));
+                    failCount++;
+                    Log.w(TAG, "[FLUSH] 전송 실패: id=" + entry.id
+                            + " type=" + entry.logType
+                            + " retry=" + (entry.retryCount + 1) + "/" + MAX_RETRIES);
                 }
             } catch (Exception e) {
-                Log.e(TAG, "[FLUSH] 예외 발생: id=" + entry.id, e);
                 dao.incrementRetry(entry.id);
                 anyFailed = true;
+                failCount++;
+                Log.e(TAG, "[FLUSH] 예외 발생: id=" + entry.id + " type=" + entry.logType, e);
             }
         }
 
-        // 큐 플러시 후, 오프라인 중 .txt에 쌓인 내용도 전송 (트리거 미발생 분)
-        Log.d(TAG, "[FLUSH] .txt 파일 스캔 시작 (트리거 미발생 분)");
+        Log.d(TAG, "[FLUSH] 큐 처리 결과: 성공=" + successCount
+                + " 실패=" + failCount + " 스킵=" + skipCount);
+
+        Log.d(TAG, "[FLUSH] .txt 파일 스캔 시작 (오프라인 중 트리거 미발생 분)");
         boolean txtFailed = LogHandler.sendAllPendingTxt(ctx, transmitter);
+        if (txtFailed) {
+            Log.w(TAG, "[FLUSH] .txt 파일 전송 중 일부 실패");
+        } else {
+            Log.d(TAG, "[FLUSH] .txt 파일 전송 완료");
+        }
         anyFailed = anyFailed || txtFailed;
-        Log.d(TAG, "[FLUSH END] 완료 — anyFailed=" + anyFailed);
+
+        int remaining = dao.countPending();
+        Log.d(TAG, "══════════════════════════════════════");
+        Log.d(TAG, "[FLUSH END] 완료"
+                + " | 결과=" + (anyFailed ? "일부실패→재시도예약" : "전체성공")
+                + " | 잔여큐=" + remaining + "개");
+        Log.d(TAG, "══════════════════════════════════════");
 
         return anyFailed ? Result.retry() : Result.success();
     }
 
-    /** 앱 시작/네트워크 복구 시 호출하여 플러시 작업 예약. */
     public static void scheduleFlush(Context ctx) {
         Constraints constraints = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -102,7 +137,6 @@ public class UploadQueueWorker extends Worker {
 
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(UploadQueueWorker.class)
                 .setConstraints(constraints)
-                // 실패 시 지수 백오프: 1분 → 2분 → 4분... (최대 WorkManager 기본값 5시간)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES)
                 .build();
 
@@ -110,6 +144,6 @@ public class UploadQueueWorker extends Worker {
                 .enqueueUniqueWork("aegis_offline_flush",
                         androidx.work.ExistingWorkPolicy.KEEP, request);
 
-        Log.d(TAG, "Offline flush work scheduled.");
+        Log.d(TAG, "[SCHEDULE] 오프라인 플러시 작업 예약 완료 (KEEP 정책, 지수 백오프 1분~)");
     }
 }
