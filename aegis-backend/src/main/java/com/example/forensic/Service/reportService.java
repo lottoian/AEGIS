@@ -269,16 +269,16 @@ public class reportService {
             document.add(new Paragraph("\nReconstructing Timeline").setBold().setFontSize(16).setMarginTop(30).setMarginBottom(10));
 
             // Reconstructing Timeline 테이블 컬럼 너비
-            float[] timelineColumnWidths = {3f, 5f, 3f, 3f};
+            float[] timelineColumnWidths = {2.5f, 7f, 2.5f, 3f};
 
             Table timelineTable = new Table(UnitValue.createPercentArray(timelineColumnWidths))
                     .useAllAvailableWidth();
 
-            String[] timelineHeaders = {"Device Timestamp", "Message", "Server Timestamp", "Transmission Timestamp"};
+            String[] timelineHeaders = {"Device\nTimestamp", "Message", "Server\nTimestamp", "Transmission\nTimestamp"};
             for (String header : timelineHeaders) {
                 Cell cell = new Cell().add(new Paragraph(header)
                                 .setBold()
-                                .setFontSize(12)
+                                .setFontSize(10)
                                 .setTextAlignment(TextAlignment.CENTER))
                         .setBackgroundColor(new DeviceGray(0.85f))
                         .setBorder(new SolidBorder(0.5f))

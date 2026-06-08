@@ -462,7 +462,7 @@ public class ServerTransmitter {
 
         // 1. 인메모리 오프셋 유효 검사 (재부팅이면 elapsedRt < tsSyncedAt)
         if (tsOffsetMs != Long.MIN_VALUE && tsSyncedAt >= 0 && elapsedRt >= tsSyncedAt) {
-            String ts = TS_FMT.format(new java.util.Date(elapsedRt + tsOffsetMs));
+            String ts = "[estimated] " + TS_FMT.format(new java.util.Date(elapsedRt + tsOffsetMs));
             Log.d(TAG, "[TIMESTAMP] 오프셋 계산: " + ts + " (elapsed=" + elapsedRt + "ms)");
             return ts;
         }
@@ -476,7 +476,7 @@ public class ServerTransmitter {
         if (savedOffset != Long.MIN_VALUE && savedSyncAt >= 0 && elapsedRt >= savedSyncAt) {
             tsOffsetMs  = savedOffset;
             tsSyncedAt  = savedSyncAt;
-            String ts = TS_FMT.format(new java.util.Date(elapsedRt + tsOffsetMs));
+            String ts = "[estimated] " + TS_FMT.format(new java.util.Date(elapsedRt + tsOffsetMs));
             Log.d(TAG, "[TIMESTAMP] SharedPrefs 오프셋 복원: " + ts);
             return ts;
         }
