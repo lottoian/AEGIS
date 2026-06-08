@@ -85,7 +85,7 @@ public class ServerTransmitter {
                         .connectTimeout(10, TimeUnit.SECONDS)
                         .readTimeout(20, TimeUnit.SECONDS)
                         .writeTimeout(20, TimeUnit.SECONDS)
-                        .connectionPool(new ConnectionPool(1, 30, TimeUnit.SECONDS))
+                        .connectionPool(new ConnectionPool(6, 30, TimeUnit.SECONDS))
                         .retryOnConnectionFailure(true)
                         .build();
                 return httpClient;
