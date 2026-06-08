@@ -4,6 +4,7 @@ import android.content.Context;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
@@ -16,6 +17,7 @@ import com.example.logcat.manager.LogHandler;
 import com.example.logcat.manager.ServerTransmitter;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * WorkManager Worker: 네트워크 복구 시 오프라인 큐를 서버로 플러시.
@@ -100,6 +102,8 @@ public class UploadQueueWorker extends Worker {
 
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(UploadQueueWorker.class)
                 .setConstraints(constraints)
+                // 실패 시 지수 백오프: 1분 → 2분 → 4분... (최대 WorkManager 기본값 5시간)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES)
                 .build();
 
         WorkManager.getInstance(ctx)

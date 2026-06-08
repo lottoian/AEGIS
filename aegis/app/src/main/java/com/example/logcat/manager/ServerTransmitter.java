@@ -27,6 +27,7 @@ import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 
 import okhttp3.CertificatePinner;
+import okhttp3.ConnectionPool;
 import okhttp3.MediaType;
 import okhttp3.MultipartBody;
 import okhttp3.OkHttpClient;
@@ -69,6 +70,10 @@ public class ServerTransmitter {
     private volatile ClientCryptoPipeline cryptoPipeline;
     private volatile byte[] cachedServerPublicKey;
 
+    // 연속 업로드 실패 횟수 — 임계치 초과 시 커넥션 풀 초기화
+    private int consecutiveFailures = 0;
+    private static final int FAILURE_THRESHOLD = 3;
+
     public ServerTransmitter(Context context) {
         this.context = context;
     }
@@ -82,9 +87,12 @@ public class ServerTransmitter {
         try {
             if (BASE_URL.startsWith("http://")) {
                 httpClient = new OkHttpClient.Builder()
-                        .connectTimeout(5, TimeUnit.SECONDS)
-                        .readTimeout(15, TimeUnit.SECONDS)
-                        .writeTimeout(15, TimeUnit.SECONDS)
+                        .connectTimeout(10, TimeUnit.SECONDS)
+                        .readTimeout(20, TimeUnit.SECONDS)
+                        .writeTimeout(20, TimeUnit.SECONDS)
+                        // stale 연결 재사용 방지: 풀 크기 1, 30초 유효
+                        .connectionPool(new ConnectionPool(1, 30, TimeUnit.SECONDS))
+                        .retryOnConnectionFailure(true)
                         .build();
                 return httpClient;
             }
@@ -234,13 +242,37 @@ public class ServerTransmitter {
 
             try (Response resp = getHttpClient().newCall(req).execute()) {
                 Log.d(TAG, "Upload response: " + resp.code());
-                return resp.isSuccessful();
+                boolean ok = resp.isSuccessful();
+                if (ok) onUploadSuccess();
+                return ok;
             }
         } catch (Exception e) {
             Log.e(TAG, "uploadEncryptedLog failed", e);
+            onUploadFailure();
             return false;
         } finally {
             if (packetBytes != null) Arrays.fill(packetBytes, (byte) 0);
+        }
+    }
+
+    private synchronized void onUploadFailure() {
+        consecutiveFailures++;
+        if (consecutiveFailures >= FAILURE_THRESHOLD) {
+            // stale 커넥션 강제 제거 후 클라이언트 재생성
+            if (httpClient != null) {
+                httpClient.connectionPool().evictAll();
+                httpClient = null;
+            }
+            cryptoPipeline = null;
+            cachedServerPublicKey = null;
+            consecutiveFailures = 0;
+            Log.w(TAG, "연속 실패 " + FAILURE_THRESHOLD + "회 — 커넥션 풀 및 파이프라인 초기화");
+        }
+    }
+
+    private synchronized void onUploadSuccess() {
+        if (consecutiveFailures > 0) {
+            consecutiveFailures = 0;
         }
     }
 
@@ -353,9 +385,8 @@ public class ServerTransmitter {
     private static final java.text.SimpleDateFormat TS_FMT =
             new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault());
 
-    // 인메모리 타임스탬프 캐시 (60초 유효)
     private static volatile String inMemoryTs = null;
-    private static volatile long inMemoryTsFetchedAt = 0;
+    private static volatile long inMemoryLastAttemptAt = 0; // 성공/실패 무관 마지막 시도 시각
     private static final long TS_CACHE_TTL_MS = 5 * 60_000; // 5분
 
     /**
@@ -367,9 +398,11 @@ public class ServerTransmitter {
      */
     public static String getServerTimestamp() {
         long now = System.currentTimeMillis();
-        if (inMemoryTs != null && (now - inMemoryTsFetchedAt) < TS_CACHE_TTL_MS) {
-            return inMemoryTs;
+        // 성공/실패 무관 5분 내 재시도 차단
+        if ((now - inMemoryLastAttemptAt) < TS_CACHE_TTL_MS) {
+            return inMemoryTs; // 성공했으면 캐시값, 실패했으면 null
         }
+        inMemoryLastAttemptAt = now;
 
         final String[] result = {null};
         CountDownLatch latch = new CountDownLatch(1);
@@ -404,7 +437,6 @@ public class ServerTransmitter {
 
         if (result[0] != null) {
             inMemoryTs = result[0];
-            inMemoryTsFetchedAt = System.currentTimeMillis();
         }
         return result[0];
     }
@@ -412,7 +444,7 @@ public class ServerTransmitter {
     /** 온/오프라인 전환 시 인메모리 캐시 무효화 (다음 호출에서 서버 재fetch). */
     public static void invalidateTimestampCache() {
         inMemoryTs = null;
-        inMemoryTsFetchedAt = 0;
+        inMemoryLastAttemptAt = 0;
     }
 
     /** 온라인 성공 시 (서버시각, 기기시각) 쌍 캐싱. */
