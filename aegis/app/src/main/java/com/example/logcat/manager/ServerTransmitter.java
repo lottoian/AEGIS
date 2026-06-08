@@ -141,29 +141,45 @@ public class ServerTransmitter {
     // 서버 공개키 획득 및 CryptoPipeline 초기화
     // ──────────────────────────────────────────────
 
+    // key fetch 실패 후 재시도 대기 (30초) — 동시 다수 스레드가 줄 서서 타임아웃 반복 방지
+    private long lastKeyFetchFailedAt = 0;
+    private static final long KEY_FETCH_RETRY_INTERVAL_MS = 30_000;
+
     private synchronized ClientCryptoPipeline getCryptoPipeline() {
         if (cryptoPipeline != null) return cryptoPipeline;
+        // 최근 실패 후 재시도 대기 중이면 즉시 null 반환
+        if (lastKeyFetchFailedAt > 0
+                && (System.currentTimeMillis() - lastKeyFetchFailedAt) < KEY_FETCH_RETRY_INTERVAL_MS) {
+            Log.d(TAG, "CryptoPipeline: key fetch 재시도 대기 중, 오프라인 큐로 전환");
+            return null;
+        }
         try {
             byte[] serverKey = fetchServerPublicKey();
             String deviceId = LogHandler.getAndroidID(context, context.getContentResolver());
             cryptoPipeline = new ClientCryptoPipeline(serverKey, deviceId);
+            lastKeyFetchFailedAt = 0;
             return cryptoPipeline;
         } catch (Exception e) {
             Log.w(TAG, "CryptoPipeline init failed (서버 불안정): " + e.getMessage());
             cachedServerPublicKey = null;
             cryptoPipeline = null;
+            lastKeyFetchFailedAt = System.currentTimeMillis();
             return null;
         }
     }
 
     private byte[] fetchServerPublicKey() throws Exception {
         if (cachedServerPublicKey != null) return cachedServerPublicKey;
-        OkHttpClient client = getHttpClient();
+        // serverkey 전용 짧은 타임아웃 클라이언트 (5초) — 메인 업로드 타임아웃과 분리
+        OkHttpClient keyClient = getHttpClient().newBuilder()
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .build();
         Request req = new Request.Builder()
                 .url(BASE_URL + SERVERKEY_PATH)
                 .get()
                 .build();
-        try (Response resp = client.newCall(req).execute()) {
+        try (Response resp = keyClient.newCall(req).execute()) {
             if (!resp.isSuccessful() || resp.body() == null) {
                 throw new RuntimeException("Server key fetch failed: " + resp.code());
             }
