@@ -101,6 +101,15 @@ public class LogService {
         for (Log log : logs) decryptMessages(log.getMessage());
     }
 
+    /** 메시지 목록에서 가장 이른 serverTimestamp를 Log 대표 serverTimestamp로 반환. */
+    private LocalDateTime resolveDocumentServerTimestamp(List<Message> messages) {
+        return messages.stream()
+                .map(Message::getServerTimestamp)
+                .filter(ts -> ts != null)
+                .min(LocalDateTime::compareTo)
+                .orElse(null);
+    }
+
     public String appendDecryptedLog(String deviceId, String logType, String decryptedLogContent, MultipartFile hashFile) {
         try {
             // 1. 해시 파일 검증
@@ -200,11 +209,13 @@ public class LogService {
                 return "DUPLICATE";
             }
 
+            LocalDateTime docServerTs = resolveDocumentServerTimestamp(messages);
             encryptMessages(messages);
             Log log = new Log(deviceId, messages, logType, reconstructedHash);
+            log.setServerTimestamp(docServerTs);
             logRepository.save(log);
 
-            System.out.println("로그 저장 완료 (암호화): " + deviceId + ", " + logType);
+            System.out.println("로그 저장 완료: " + deviceId + ", " + logType + ", serverTimestamp=" + docServerTs);
             return "SUCCESS";
         } catch (Exception e) {
             e.printStackTrace();
@@ -314,11 +325,13 @@ public class LogService {
             }
 
 // 7. Log 객체 생성 및 저장
+            LocalDateTime docServerTs = resolveDocumentServerTimestamp(messages);
             encryptMessages(messages);
             Log log = new Log(deviceId, messages, logType, logFileHash);
+            log.setServerTimestamp(docServerTs);
             logRepository.save(log);
 
-            System.out.println("로그 저장 완료 (암호화): " + deviceId + ", " + logType);
+            System.out.println("로그 저장 완료: " + deviceId + ", " + logType + ", serverTimestamp=" + docServerTs);
 
 
         } catch (Exception e) {
