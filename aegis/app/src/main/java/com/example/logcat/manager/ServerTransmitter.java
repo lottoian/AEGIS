@@ -441,6 +441,8 @@ public class ServerTransmitter {
 
     private static volatile String inMemoryTs = null;
     private static volatile long inMemoryLastAttemptAt = 0;
+    private static volatile long inMemorySuccessServerMs = 0;
+    private static volatile long inMemorySuccessLocalElapsedRt = 0;
     private static final long TS_CACHE_TTL_MS = 5 * 60_000;       // 성공 시 5분 캐시
     private static final long TS_RETRY_INTERVAL_MS = 30_000;       // 실패 시 30초 후 재시도
 
@@ -450,6 +452,14 @@ public class ServerTransmitter {
         // 성공 캐시: 5분, 실패(null) 캐시: 30초
         long ttl = (inMemoryTs != null) ? TS_CACHE_TTL_MS : TS_RETRY_INTERVAL_MS;
         if (elapsed < ttl) {
+            if (inMemorySuccessServerMs > 0 && inMemorySuccessLocalElapsedRt > 0) {
+                long currentElapsedRt = android.os.SystemClock.elapsedRealtime();
+                long elapsedMs = currentElapsedRt - inMemorySuccessLocalElapsedRt;
+                long estimatedMs = inMemorySuccessServerMs + elapsedMs;
+                String estimated = TS_FMT.format(new java.util.Date(estimatedMs));
+                Log.d(TAG, "[TIMESTAMP] 캐시 기반 시간 추정: " + estimated);
+                return estimated;
+            }
             Log.d(TAG, "[TIMESTAMP] 캐시 사용: " + inMemoryTs
                     + " (갱신까지 " + (ttl - elapsed) / 1000 + "초)");
             return inMemoryTs;
@@ -498,6 +508,13 @@ public class ServerTransmitter {
 
         if (result[0] != null) {
             inMemoryTs = result[0];
+            try {
+                inMemorySuccessServerMs = TS_FMT.parse(inMemoryTs).getTime();
+                inMemorySuccessLocalElapsedRt = android.os.SystemClock.elapsedRealtime();
+            } catch (Exception e) {
+                inMemorySuccessServerMs = 0;
+                inMemorySuccessLocalElapsedRt = 0;
+            }
         } else {
             Log.w(TAG, "[TIMESTAMP] 타임스탬프 획득 실패 — null 반환");
         }
