@@ -98,21 +98,7 @@ public class LogHandler {
      * 최초 동기화 또는 재부팅 시에만 서버 fetch 발생.
      */
     public static String resolveServerTimestamp(Context context) {
-        // 1. SharedPreferences 캐시 기반으로 로컬 추정 시간 계산 (네트워크 호출을 원천 차단하여 ANR 방지)
-        String estimated = ServerTransmitter.getEstimatedServerTimestamp(context);
-        if (estimated != null) {
-            return estimated;
-        }
-
-        // 2. 캐시가 없는 최초 구동 시점에만 온라인인 경우 1회 동기화 시도
-        if (ServerTransmitter.isNetworkAvailable(context)) {
-            String ts = ServerTransmitter.getServerTimestamp();
-            if (ts != null) {
-                ServerTransmitter.saveServerTimestampCache(context, ts);
-                return ts;
-            }
-        }
-        return null;
+        return ServerTransmitter.resolveServerTimestamp(context);
     }
 
     public void initializeLogFile() {
