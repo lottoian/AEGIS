@@ -440,13 +440,17 @@ public class ServerTransmitter {
 
     private static volatile String inMemoryTs = null;
     private static volatile long inMemoryLastAttemptAt = 0;
-    private static final long TS_CACHE_TTL_MS = 5 * 60_000;
+    private static final long TS_CACHE_TTL_MS = 5 * 60_000;       // 성공 시 5분 캐시
+    private static final long TS_RETRY_INTERVAL_MS = 30_000;       // 실패 시 30초 후 재시도
 
     public static String getServerTimestamp() {
         long now = System.currentTimeMillis();
-        if ((now - inMemoryLastAttemptAt) < TS_CACHE_TTL_MS) {
+        long elapsed = now - inMemoryLastAttemptAt;
+        // 성공 캐시: 5분, 실패(null) 캐시: 30초
+        long ttl = (inMemoryTs != null) ? TS_CACHE_TTL_MS : TS_RETRY_INTERVAL_MS;
+        if (elapsed < ttl) {
             Log.d(TAG, "[TIMESTAMP] 캐시 사용: " + inMemoryTs
-                    + " (갱신까지 " + (TS_CACHE_TTL_MS - (now - inMemoryLastAttemptAt)) / 1000 + "초)");
+                    + " (갱신까지 " + (ttl - elapsed) / 1000 + "초)");
             return inMemoryTs;
         }
         inMemoryLastAttemptAt = now;
