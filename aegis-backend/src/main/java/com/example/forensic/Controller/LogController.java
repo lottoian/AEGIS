@@ -108,6 +108,18 @@ public class LogController {
     }
 
     /**
+     * 암호화된 상태의 원본 로그 파일 조회
+     */
+    @GetMapping("/raw/{deviceId}/{logType}")
+    public ResponseEntity<String> getRawLogContents(@PathVariable String deviceId, @PathVariable String logType) {
+        if (!PATH_VALIDATION_PATTERN.matcher(deviceId).matches() || !PATH_VALIDATION_PATTERN.matcher(logType).matches()) {
+            return ResponseEntity.badRequest().body("🚨 잘못된 형식의 경로 변수입니다.");
+        }
+        String fileContents = logService.readRawLog(deviceId, logType);
+        return ResponseEntity.ok(fileContents);
+    }
+
+    /**
      * 특정 시간 범위 내에서 로그 분석 및 PDF 생성
      */
     @GetMapping("/analyze/{deviceId}/{startTime}/{endTime}")

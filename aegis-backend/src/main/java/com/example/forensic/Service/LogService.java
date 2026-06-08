@@ -356,6 +356,11 @@ public class LogService {
         return logs.toString();
     }
 
+    public String readRawLog(String deviceId, String logType) {
+        List<Log> logs = logRepository.findByDeviceIdAndLogType(deviceId, logType);
+        return logs.toString();
+    }
+
 
 
 
