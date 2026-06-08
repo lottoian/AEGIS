@@ -58,14 +58,15 @@ public class ServerTransmitter {
     private final Context context;
     private volatile OkHttpClient httpClient;
     private volatile ClientCryptoPipeline cryptoPipeline;
-    private volatile byte[] cachedServerPublicKey;
+
+    // 서버 공개키는 앱 생명주기 동안 불변 — static으로 인스턴스 간 공유
+    // (UploadQueueWorker가 new ServerTransmitter()할 때마다 재fetch 방지)
+    private static volatile byte[] cachedServerPublicKey;
+    private static volatile long lastKeyFetchFailedAt = 0;
+    private static final long KEY_FETCH_RETRY_INTERVAL_MS = 30_000;
 
     private int consecutiveFailures = 0;
     private static final int FAILURE_THRESHOLD = 3;
-
-    // key fetch 실패 후 재시도 대기 (30초)
-    private long lastKeyFetchFailedAt = 0;
-    private static final long KEY_FETCH_RETRY_INTERVAL_MS = 30_000;
 
     public ServerTransmitter(Context context) {
         this.context = context;
