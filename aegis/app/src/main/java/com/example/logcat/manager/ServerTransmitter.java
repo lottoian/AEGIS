@@ -268,6 +268,7 @@ public class ServerTransmitter {
 
             Request req = new Request.Builder()
                     .url(BASE_URL + UPLOAD_PATH)
+                    .addHeader("Connection", "close")
                     .post(multipart)
                     .build();
 
