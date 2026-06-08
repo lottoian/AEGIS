@@ -161,7 +161,8 @@ public class ServerTransmitter {
             return cryptoPipeline;
         } catch (Exception e) {
             Log.w(TAG, "CryptoPipeline init failed (서버 불안정): " + e.getMessage());
-            cachedServerPublicKey = null;
+            // cachedServerPublicKey 유지 — 이미 캐시된 키가 있으면 다음 시도에서 재사용
+            // 키 fetch 자체가 실패한 경우만 null (fetchServerPublicKey 내부에서 처리)
             cryptoPipeline = null;
             lastKeyFetchFailedAt = System.currentTimeMillis();
             return null;
@@ -275,12 +276,13 @@ public class ServerTransmitter {
         consecutiveFailures++;
         if (consecutiveFailures >= FAILURE_THRESHOLD) {
             // stale 커넥션 강제 제거 후 클라이언트 재생성
+            // cachedServerPublicKey는 유지 — 서버 재시작 없으면 키는 동일하므로
+            // 불필요한 serverkey 재요청 차단
             if (httpClient != null) {
                 httpClient.connectionPool().evictAll();
                 httpClient = null;
             }
             cryptoPipeline = null;
-            cachedServerPublicKey = null;
             consecutiveFailures = 0;
             Log.w(TAG, "연속 실패 " + FAILURE_THRESHOLD + "회 — 커넥션 풀 및 파이프라인 초기화");
         }
