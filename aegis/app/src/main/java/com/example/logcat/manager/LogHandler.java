@@ -211,7 +211,9 @@ public class LogHandler {
         CryptoManager crypto = CryptoManager.getInstance();
         boolean anyFailed = false;
 
-        String transmissionTs = ServerTransmitter.resolveServerTimestamp(context);
+        String transmissionTsRaw = ServerTransmitter.resolveServerTimestamp(context);
+        String transmissionTs = transmissionTsRaw != null
+                ? transmissionTsRaw.replaceFirst("^\\[estimated\\]\\s*", "") : null;
         if (transmissionTs != null) {
             Log.d(TAG, "[sendAllPendingTxt] transmissionTimestamp: " + transmissionTs);
         }

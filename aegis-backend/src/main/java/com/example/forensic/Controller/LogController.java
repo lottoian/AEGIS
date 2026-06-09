@@ -165,8 +165,7 @@ public class LogController {
 
     @GetMapping("/timestamp")
     public ResponseEntity<String> getServerTimestamp() {
-        String currentTimestamp = LocalDateTime.now()
-                .plusHours(9)
+        String currentTimestamp = java.time.ZonedDateTime.now(java.time.ZoneId.of("Asia/Seoul"))
                 .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
         return ResponseEntity.ok(currentTimestamp);
     }

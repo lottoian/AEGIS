@@ -26,6 +26,7 @@ import androidx.core.app.NotificationCompat;
 
 import com.example.logcat.manager.LogHandler;
 import com.example.logcat.manager.ServerTransmitter;
+
 import com.example.logcat.queue.UploadQueueWorker;
 import com.example.logcat.R;
 
@@ -214,7 +215,8 @@ public class AntiForensicLogger extends Service {
         networkCallback = new ConnectivityManager.NetworkCallback() {
             @Override
             public void onAvailable(Network network) {
-                Log.d("MonitoringService", "[ONLINE] 네트워크 복구 감지 → scheduleFlush 호출");
+                Log.d("MonitoringService", "[ONLINE] 네트워크 복구 감지 → 타임스탬프 캐시 초기화 + scheduleFlush 호출");
+                ServerTransmitter.invalidateTimestampCache();
                 UploadQueueWorker.scheduleFlush(AntiForensicLogger.this);
             }
         };

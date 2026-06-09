@@ -450,6 +450,12 @@ public class ServerTransmitter {
     private static volatile long tsOffsetMs     = Long.MIN_VALUE;
     private static volatile long tsSyncedAt     = -1; // elapsedRt at sync time
 
+    /** 네트워크 복구 시 인메모리 오프셋 초기화 → 다음 호출에서 서버 재동기화. */
+    public static void invalidateTimestampCache() {
+        tsOffsetMs = Long.MIN_VALUE;
+        tsSyncedAt = -1;
+    }
+
     /**
      * 온라인/오프라인/재부팅 구분 없이 통합된 서버시각 반환.
      *
@@ -459,11 +465,14 @@ public class ServerTransmitter {
      */
     public static String resolveServerTimestamp(android.content.Context context) {
         long elapsedRt = android.os.SystemClock.elapsedRealtime();
+        boolean online = isNetworkAvailable(context);
 
         // 1. 인메모리 오프셋 유효 검사 (재부팅이면 elapsedRt < tsSyncedAt)
         if (tsOffsetMs != Long.MIN_VALUE && tsSyncedAt >= 0 && elapsedRt >= tsSyncedAt) {
-            String ts = "[estimated] " + TS_FMT.format(new java.util.Date(elapsedRt + tsOffsetMs));
-            Log.d(TAG, "[TIMESTAMP] 오프셋 계산: " + ts + " (elapsed=" + elapsedRt + "ms)");
+            String calculated = TS_FMT.format(new java.util.Date(elapsedRt + tsOffsetMs));
+            // 온라인이면 [estimated] 없이, 오프라인이면 [estimated] 표기
+            String ts = online ? calculated : "[estimated] " + calculated;
+            Log.d(TAG, "[TIMESTAMP] 오프셋 계산: " + ts + " (online=" + online + ")");
             return ts;
         }
 
@@ -476,7 +485,8 @@ public class ServerTransmitter {
         if (savedOffset != Long.MIN_VALUE && savedSyncAt >= 0 && elapsedRt >= savedSyncAt) {
             tsOffsetMs  = savedOffset;
             tsSyncedAt  = savedSyncAt;
-            String ts = "[estimated] " + TS_FMT.format(new java.util.Date(elapsedRt + tsOffsetMs));
+            String calculated = TS_FMT.format(new java.util.Date(elapsedRt + tsOffsetMs));
+            String ts = online ? calculated : "[estimated] " + calculated;
             Log.d(TAG, "[TIMESTAMP] SharedPrefs 오프셋 복원: " + ts);
             return ts;
         }

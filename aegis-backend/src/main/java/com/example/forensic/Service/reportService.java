@@ -5,6 +5,7 @@ import com.example.forensic.Entity.Message;
 import com.itextpdf.kernel.colors.Color;
 import com.itextpdf.kernel.colors.DeviceGray;
 import com.itextpdf.kernel.colors.DeviceRgb;
+import com.itextpdf.kernel.geom.PageSize;
 import com.itextpdf.kernel.pdf.PdfDocument;
 import com.itextpdf.kernel.pdf.PdfWriter;
 import com.itextpdf.layout.Document;
@@ -268,8 +269,8 @@ public class reportService {
             // Reconstructing Timeline Section
             document.add(new Paragraph("\nReconstructing Timeline").setBold().setFontSize(16).setMarginTop(30).setMarginBottom(10));
 
-            // Reconstructing Timeline 테이블 컬럼 너비
-            float[] timelineColumnWidths = {2.5f, 7f, 2.5f, 3f};
+            // Reconstructing Timeline 테이블 컬럼 너비 (Device, Message, Server, Transmission)
+            float[] timelineColumnWidths = {2.5f, 5f, 2.5f, 2.5f};
 
             Table timelineTable = new Table(UnitValue.createPercentArray(timelineColumnWidths))
                     .useAllAvailableWidth();
@@ -309,35 +310,35 @@ public class reportService {
                 Message msg = wrapper.message;
                 Color bgColor = logTypeColors.getOrDefault(wrapper.logType, new DeviceGray(0.85f));
 
-                timelineTable.addCell(new Cell().add(new Paragraph(msg.getDeviceTimestamp().format(FORMATTER)))
-                        .setBackgroundColor(bgColor).setPadding(5));
+                timelineTable.addCell(new Cell().add(new Paragraph(msg.getDeviceTimestamp().format(FORMATTER)).setFontSize(8))
+                        .setBackgroundColor(bgColor).setPadding(3));
 
-                String wrappedContent = wrapTextEveryNChars(msg.getContent(), 65);
-                timelineTable.addCell(new Cell().add(new Paragraph(wrappedContent))
-                        .setBackgroundColor(bgColor).setPadding(5));
+                String wrappedContent = wrapTextEveryNChars(msg.getContent(), 60);
+                timelineTable.addCell(new Cell().add(new Paragraph(wrappedContent).setFontSize(8))
+                        .setBackgroundColor(bgColor).setPadding(3));
 
-                // Server Timestamp (추정값이면 [Offline\nEstimated] 표기)
+                // Server Timestamp
                 String serverTsStr = "N/A";
                 if (msg.getServerTimestamp() != null) {
-                    serverTsStr = (msg.isEstimatedServerTimestamp() ? "[Offline\nEstimated]\n" : "")
+                    serverTsStr = (msg.isEstimatedServerTimestamp() ? "[est.]\n" : "")
                             + msg.getServerTimestamp().format(FORMATTER);
                 } else if (msg.getTransmissionTimestamp() != null) {
                     LocalDateTime maxDeviceTs = maxDeviceTsMap.get(msg.getTransmissionTimestamp());
                     if (maxDeviceTs != null) {
                         Duration diff = Duration.between(msg.getDeviceTimestamp(), maxDeviceTs);
                         LocalDateTime estimatedServerTs = msg.getTransmissionTimestamp().minus(diff);
-                        serverTsStr = "[Offline\nEstimated]\n" + estimatedServerTs.format(FORMATTER);
+                        serverTsStr = "[est.]\n" + estimatedServerTs.format(FORMATTER);
                     }
                 }
-                timelineTable.addCell(new Cell().add(new Paragraph(serverTsStr).setFontSize(9))
-                        .setBackgroundColor(bgColor).setPadding(5));
+                timelineTable.addCell(new Cell().add(new Paragraph(serverTsStr).setFontSize(8))
+                        .setBackgroundColor(bgColor).setPadding(3));
 
-                // Transmission Timestamp (오프라인→온라인 플러시 시각)
+                // Transmission Timestamp
                 String transmissionTsStr = msg.getTransmissionTimestamp() != null
                         ? msg.getTransmissionTimestamp().format(FORMATTER)
                         : "-";
-                timelineTable.addCell(new Cell().add(new Paragraph(transmissionTsStr).setFontSize(9))
-                        .setBackgroundColor(bgColor).setPadding(5));
+                timelineTable.addCell(new Cell().add(new Paragraph(transmissionTsStr).setFontSize(8))
+                        .setBackgroundColor(bgColor).setPadding(3));
             }
 
             document.add(timelineTable);

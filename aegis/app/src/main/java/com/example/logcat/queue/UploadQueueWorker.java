@@ -75,7 +75,9 @@ public class UploadQueueWorker extends Worker {
                 Log.d(TAG, "[FLUSH] 복호화 완료: " + (System.currentTimeMillis() - decStart) + "ms"
                         + " contentLen=" + logContent.length());
 
-                String transmissionTs = ServerTransmitter.resolveServerTimestamp(ctx);
+                String transmissionTsRaw = ServerTransmitter.resolveServerTimestamp(ctx);
+                String transmissionTs = transmissionTsRaw != null
+                        ? transmissionTsRaw.replaceFirst("^\\[estimated\\]\\s*", "") : null;
                 if (transmissionTs != null) {
                     StringBuilder tempSb = new StringBuilder();
                     String[] contentLines = logContent.split("\\r?\\n");
